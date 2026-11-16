@@ -391,12 +391,15 @@
     }
   }
 
-  // Calendar links are read again when the app opens, at most every few hours.
+  // Calendar links are read again when the app opens, at most every few
+  // hours, once both the links and the calendars are known (UUOB may take
+  // a moment to be found).
   let refreshedOnce = false;
-  async function refreshDue(list) {
-    if (refreshedOnce || !list.length) return;
+  let subsKnown = false;
+  async function refreshDue() {
+    if (refreshedOnce || !subsKnown || !containers.length) return;
     refreshedOnce = true;
-    for (const sub of list) {
+    for (const sub of subs) {
       if (Date.now() - (sub.refreshed ?? 0) > 3 * 3600 * 1000 && containers.some((c) => c.id === sub.id)) await refresh(sub).catch(() => {});
     }
   }
@@ -463,11 +466,14 @@
     });
     watchEvents();
     const c = uuob.all('calendar').subscribe((r) => (infos = r));
-    const d = uuob.containers.subscribe((r) => (containers = r));
+    const d = uuob.containers.subscribe((r) => {
+      containers = r;
+      refreshDue();
+    });
     const e = subsC.subscribe((r) => {
       subs = r;
-      // Once the calendars are known, so a link whose calendar is gone isn't read.
-      setTimeout(() => refreshDue(r), 1500);
+      subsKnown = true;
+      refreshDue();
     });
     moveOldCalendars().catch(() => {});
     prefsC.get('calendar').then((p) => {
@@ -667,7 +673,7 @@
         {/if}
         <label class="stack">Calendar
           <select class="field" bind:value={editor.calendar}>
-            {#each cals.filter((c) => c.canWrite || c.id === editor.calendar) as c}<option value={c.id}>{c.name}</option>{/each}
+            {#each cals.filter((c) => canEdit(c.id) || c.id === editor.calendar) as c}<option value={c.id}>{c.name}</option>{/each}
           </select>
         </label>
         <input class="field" placeholder="Location" bind:value={editor.location} />
