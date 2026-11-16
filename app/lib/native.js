@@ -48,3 +48,11 @@ export async function saveText(name, text) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   return true;
 }
+
+/** Opens a link from an event (a meeting, a web page, an email address or a
+ *  phone number) in the app the system uses for it. */
+export async function openLink(url) {
+  if (!/^(https?:|mailto:|tel:)/i.test(url)) return;
+  if (inApp) return (await import('@tauri-apps/plugin-opener')).openUrl(url);
+  window.open(url, '_blank', 'noopener');
+}

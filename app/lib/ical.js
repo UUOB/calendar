@@ -166,7 +166,7 @@ export function parseIcs(text) {
       continue;
     }
 
-    const e = { title: text('SUMMARY') || 'Untitled', notes: text('DESCRIPTION'), location: text('LOCATION'), uid };
+    const e = { title: text('SUMMARY') || 'Untitled', notes: text('DESCRIPTION'), location: text('LOCATION'), uid, ...invitation(props) };
     if (!start.time) {
       // All-day: DTEND is the day after the last day.
       let after = one('DTEND') ? when(one('DTEND'), calTz, warn).date : null;
@@ -219,7 +219,34 @@ export function parseIcs(text) {
     const d = into(rid, m.tz).date;
     events.push({ ...e, id: recordId(uid, d), recurrence_of: recordId(uid), recurrence_date: d });
   }
-  return { name, events, skipped, unreadableRules, zones: [...warn.zones] };
+  // Google names your own calendar by your address: that's how the card knows which guest is you.
+  const owner = name && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(name) ? name.toLowerCase() : null;
+  return { name, owner, events, skipped, unreadableRules, zones: [...warn.zones] };
+}
+
+const ANSWERS = { ACCEPTED: 'yes', TENTATIVE: 'maybe', DECLINED: 'no' };
+const person = (p) => {
+  const email = p.value.replace(/^mailto:/i, '').trim();
+  const name = (p.params.CN ?? '').trim();
+  return { ...(name && name.toLowerCase() !== email.toLowerCase() ? { name } : {}), email };
+};
+
+/** Who organizes the event, who is invited and how they answered, and its
+ *  links: { organizer?, attendees?, conference?, url? } (only what's there). */
+function invitation(props) {
+  const out = {};
+  const org = props.find((p) => p.name === 'ORGANIZER');
+  if (org && /@/.test(org.value)) out.organizer = person(org);
+  const attendees = props
+    .filter((p) => p.name === 'ATTENDEE' && /@/.test(p.value) && !/^(ROOM|RESOURCE)$/i.test(p.params.CUTYPE ?? ''))
+    .slice(0, 300)
+    .map((p) => ({ ...person(p), answer: ANSWERS[(p.params.PARTSTAT ?? '').toUpperCase()] ?? null }));
+  if (attendees.length) out.attendees = attendees;
+  const conf = props.find((p) => p.name === 'X-GOOGLE-CONFERENCE' || (p.name === 'CONFERENCE' && /^https?:/i.test(p.value)));
+  if (conf) out.conference = unescape(conf.value).trim();
+  const url = props.find((p) => p.name === 'URL' && /^https?:/i.test(p.value.trim()));
+  if (url) out.url = unescape(url.value).trim();
+  return out;
 }
 
 // ---------------------------------------------------------------- writing
@@ -280,6 +307,12 @@ export function writeIcs(events, name) {
     out.push(`SUMMARY:${escape(e.title ?? '')}`);
     if (e.location) out.push(`LOCATION:${escape(e.location)}`);
     if (e.notes) out.push(`DESCRIPTION:${escape(e.notes)}`);
+    if (e.url) out.push(`URL:${e.url}`);
+    if (e.conference) out.push(`X-GOOGLE-CONFERENCE:${e.conference}`);
+    const cn = (p) => (p.name ? `;CN="${p.name.replace(/"/g, "'")}"` : '');
+    if (e.organizer?.email) out.push(`ORGANIZER${cn(e.organizer)}:mailto:${e.organizer.email}`);
+    const status = { yes: 'ACCEPTED', maybe: 'TENTATIVE', no: 'DECLINED' };
+    for (const a of e.attendees ?? []) out.push(`ATTENDEE${cn(a)};PARTSTAT=${status[a.answer] ?? 'NEEDS-ACTION'}:mailto:${a.email}`);
     out.push('END:VEVENT');
   }
   out.push('END:VCALENDAR');

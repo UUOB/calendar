@@ -10,11 +10,15 @@ import { addDays, pad } from '../../uuob/ui/dates.js';
 import { parseRule, ruleText, supported, describe } from './recur.js';
 import { fromLocal, daysBetween, zonedInstant, localInstant } from './zones.js';
 
-/** What an event record holds; everything else on screen is added by the app. */
-const FIELDS = ['title', 'notes', 'location', 'all_day', 'date', 'end_date', 'start', 'end', 'tz', 'rrule', 'exdates', 'recurrence_of', 'recurrence_date', 'uid'];
+/** What the app adds to an event on screen (lib/instances.js, the sheet).
+ *  Everything else belongs to the record, including fields a newer version
+ *  of the app writes: an edit here keeps them. */
+const ADDED = ['id', 'container', 'calendar', 'key', 'occurrence', 'series', 'row', 'continues', 'goesOn', 'readonly', 'repeat', 'repeatWas', 'changed', 'extra'];
+/** What the event sheet sets; the rest of a record (people, links …) stays as it was. */
+const SHEET = ['title', 'notes', 'location', 'all_day', 'date', 'end_date', 'start', 'end', 'tz', 'rrule', 'exdates', 'recurrence_of', 'recurrence_date', 'uid'];
 export function record(e) {
   const r = {};
-  for (const k of FIELDS) if (e[k] !== undefined && e[k] !== null && e[k] !== '' && !(Array.isArray(e[k]) && !e[k].length)) r[k] = e[k];
+  for (const k of Object.keys(e)) if (!ADDED.includes(k) && e[k] !== undefined && e[k] !== null && e[k] !== '' && !(Array.isArray(e[k]) && !e[k].length)) r[k] = e[k];
   if (r.all_day) (delete r.start, delete r.end);
   if (r.end_date && r.end_date <= r.date) delete r.end_date;
   if (r.id) delete r.id;
@@ -88,6 +92,8 @@ export function editorFor(o, events = []) {
     repeat, repeatWas: JSON.stringify(repeat),
     series, occurrence: o.occurrence ?? o.recurrence_date ?? null, changed: !!o.recurrence_of,
     uid: o.uid, readonly: !!o.readonly,
+    // What the sheet doesn't show (people, links, a newer app's fields), kept on save.
+    extra: Object.fromEntries(Object.entries(record(o.recurrence_of ? o : (series ?? o))).filter(([k]) => !SHEET.includes(k))),
   };
 }
 
@@ -123,7 +129,7 @@ export function planSave(ed, scope, events = []) {
   const ops = [];
   const s = ed.series;
   if (!s) {
-    const value = record({ ...t, rrule: ruleFrom(ed.repeat, t), uid: ed.uid });
+    const value = record({ ...ed.extra, ...t, rrule: ruleFrom(ed.repeat, t), uid: ed.uid });
     ops.push({ put: ed.calendar, id: ed.id, value });
     if (ed.id && ed.container && ed.container !== ed.calendar) ops.push({ delete: ed.container, id: ed.id });
     return ops;
@@ -137,7 +143,7 @@ export function planSave(ed, scope, events = []) {
       const b = fromLocal(t.end_date, t.end, s.tz);
       when = { ...t, date: a.date, start: a.time, end_date: b.date, end: b.time, tz: s.tz };
     }
-    ops.push({ put: s.container, id, value: record({ ...when, recurrence_of: s.id, recurrence_date: ed.occurrence, uid: s.uid }) });
+    ops.push({ put: s.container, id, value: record({ ...ed.extra, ...when, recurrence_of: s.id, recurrence_date: ed.occurrence, uid: s.uid }) });
     return ops;
   }
   // All of them: the series moves by as much as this occurrence was moved.

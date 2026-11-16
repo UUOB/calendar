@@ -8,7 +8,9 @@
   import { daysBetween } from './lib/zones.js';
   import { parseIcs, writeIcs } from './lib/ical.js';
   import { record } from './lib/series.js';
-  import { calendarUrl, fetchText, saveText } from './lib/native.js';
+  import { calendarUrl, fetchText, saveText, openLink } from './lib/native.js';
+  import { meeting, notesOf, linkify, peopleOf, peopleSummary, answerOf, asksAnswer } from './lib/details.js';
+  import { describe } from './lib/recur.js';
 
   // Every calendar is a container of its own, so it can be shared with other
   // people. The first calendar lives in the app's first container, which
@@ -20,6 +22,9 @@
   // container: a link like Google's secret address is a key to that calendar,
   // so it is not shared along with the calendar.
   const subsC = uuob.collection('subscriptions');
+  // Your Going / Maybe / No to invitations, by event. Also in the private
+  // first container: only you see it, and the organizer isn't told.
+  const answersC = uuob.collection('answers');
   const COLORS = ['blue', 'red', 'orange', 'yellow', 'green', 'teal', 'purple', 'pink'];
   const HOUR = 52; // px per hour
 
@@ -41,6 +46,11 @@
   let mode = $state('week'); // 'week' | 'month'
   let cursor = $state(today());
   let narrow = $state(false);
+  let viewing = $state(null); // the event whose card is open
+  let peopleOpen = $state(false);
+  let joiningOpen = $state(false);
+  let addMenu = $state(false); // the sidebar's + : new calendar, import, subscribe
+  let answers = $state(new Map()); // event id -> 'yes' | 'maybe' | 'no'
   let editor = $state(null); // event being edited / created (see lib/series.js)
   let scopeAsk = $state(null); // 'save' | 'delete': only this occurrence, or all?
   let calSheet = $state(null);
@@ -58,10 +68,11 @@
   // Width of the hour grid's scrollbar (0 with overlay scrollbars). The rows
   // above the grid don't scroll, so they pad by this much to stay aligned.
   let scrollbar = $state(0);
+  let gridWidth = $state(800); // to guess how many lines an event's title needs
   $effect(() => {
     const el = gridEl;
     if (!el) return;
-    const measure = () => (scrollbar = el.offsetWidth - el.clientWidth);
+    const measure = () => ((scrollbar = el.offsetWidth - el.clientWidth), (gridWidth = el.clientWidth));
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     measure();
@@ -89,7 +100,38 @@
   // What each day on screen shows: occurrences of repeating events, events
   // longer than a day on each of their days (lib/instances.js).
   const range = $derived(mode === 'month' ? [monthDays[0], monthDays[41]] : [days[0], days[days.length - 1]]);
-  const dayMap = $derived(byDay(expand(shown, range[0], range[1]), range[0], range[1]));
+  const instances = $derived(expand(shown, range[0], range[1]));
+  const dayMap = $derived(byDay(instances, range[0], range[1]));
+
+  // Invitations. Google names your own calendar by your address, so the
+  // files and links you add tell which guest is you (kept with your prefs).
+  let addresses = $state([]);
+  const mine = $derived(new Set(addresses));
+  const answerKey = (e) => (e.recurrence_of ? e.id : (e.series?.id ?? e.id));
+  const chosen = (e) => answers.get(answerKey(e)) ?? null;
+  const answerFor = (e) => answerOf(e, mine, chosen(e));
+  function setAnswer(e, a) {
+    answers = new Map(answers).set(answerKey(e), a);
+    answersC.put({ answer: a }, answerKey(e));
+  }
+  /** "2:30–4:00 PM", "14:30–16:00" */
+  function span(a, b) {
+    const x = friendlyTime(a);
+    const y = friendlyTime(b === '24:00' ? '00:00' : b);
+    const suffix = x.match(/\s?[AP]M$/i)?.[0];
+    return suffix && y.endsWith(suffix.trim()) ? `${x.slice(0, -suffix.length)}–${y}` : `${x}–${y}`;
+  }
+  const blockTime = (e) => (e.continues ? `until ${friendlyTime(e.end === '24:00' ? '00:00' : e.end)}` : span(e.start, e.end));
+  /** About how many lines a title takes in an event block (13px bold is about 7px a letter). */
+  const titleLines = (title, lanes) => Math.ceil(title.length / Math.max(4, Math.floor(((gridWidth - 56) / days.length / lanes - 23) / 7.2)));
+  const place = (e) => (e.location && !/^https?:\/\//i.test(e.location.trim()) ? e.location : '');
+  function whenText(e) {
+    const day = (d) => parse(d).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+    const last = e.end_date && e.end_date > e.date ? e.end_date : e.date;
+    if (e.all_day) return last > e.date ? `${day(e.date)} – ${day(last)}` : `${day(e.date)} · all day`;
+    if (last > e.date) return `${day(e.date)}, ${friendlyTime(e.start)} – ${day(last)}, ${friendlyTime(e.end)}`;
+    return `${day(e.date)} · ${span(e.start, e.end)}`;
+  }
   const NONE = { allDay: [], timed: [] };
   const onDay = (d) => dayMap.get(d) ?? NONE;
   const tasksOn = (d) => (showTasks ? tasks.filter((x) => x.due === d && !x.done) : []);
@@ -209,7 +251,19 @@
     editor = scopeAsk = null;
     apply(ops);
   }
-  const open = (e) => (editor = { ...editorFor(e, events), readonly: !canEdit(e.calendar) });
+  // Tapping an event shows its card; the card's pencil opens the sheet. A day
+  // piece of a longer event shows the whole event.
+  function open(e) {
+    viewing = instances.find((o) => o.key === e.key) ?? e;
+    peopleOpen = joiningOpen = false;
+    linkError = '';
+  }
+  let linkError = $state('');
+  const visit = (url) => ((linkError = ''), openLink(url).catch(() => (linkError = "That link couldn't be opened.")));
+  function edit(e) {
+    viewing = null;
+    editor = editorFor(e, events);
+  }
   // A new start date keeps the event's length in days.
   function moveStart(date) {
     if (!date) return;
@@ -233,7 +287,9 @@
     let cal = id;
     if (!cal) cal = await uuob.containers.create(name);
     else if (name !== cals.find((c) => c.id === id)?.name) await uuob.containers.rename(id, name);
-    await uuob.collection('calendar', cal).put({ color, created: created ?? Date.now() }, 'info');
+    // The rest of the info (a link it follows, whose calendar it is) stays.
+    const { container, id: _, ...info } = infos.find((i) => i.container === cal) ?? {};
+    await uuob.collection('calendar', cal).put({ ...info, color, created: created ?? Date.now() }, 'info');
   }
   // Deletes the calendar everywhere; one someone shared with you is only left.
   async function deleteCal() {
@@ -327,6 +383,7 @@
     const zones = new Set();
     for (const item of s.items.filter((i) => i.r?.events.length)) {
       const cal = item.target === 'new' ? await newCalendar(item.name) : item.target;
+      await noteAddress(item.r.owner);
       for (const e of item.r.events) {
         await eventsIn(cal).put(record(e), e.id);
         s.done++;
@@ -350,7 +407,16 @@
       for (const e of gone) await eventsIn(sub.id).delete(e.id);
     });
     await subsC.put({ url: sub.url, refreshed: Date.now() }, sub.id);
+    await noteAddress(r.owner);
     return r;
+  }
+
+  /** Remembers your address when a file or link is your own calendar
+   *  (Google's are named by their owner's), so the card knows which guest is you. */
+  async function noteAddress(owner) {
+    if (!owner || addresses.includes(owner)) return;
+    addresses = [...addresses, owner];
+    await prefsC.put({ emails: addresses }, 'me');
   }
 
   async function subscribe() {
@@ -475,6 +541,8 @@
       subsKnown = true;
       refreshDue();
     });
+    const f = answersC.subscribe((r) => (answers = new Map(r.map((x) => [x.id, x.answer]))));
+    const g = prefsC.subscribe((r) => (addresses = r.find((x) => x.id === 'me')?.emails ?? []));
     moveOldCalendars().catch(() => {});
     prefsC.get('calendar').then((p) => {
       if (p?.hidden) hidden = new Set(p.hidden);
@@ -488,14 +556,27 @@
     document.addEventListener('visibilitychange', wake);
     window.addEventListener('focus', tickNow);
     scrollToMorning();
-    return () => (a(), stopEvents?.(), c(), d(), e(), clearInterval(timer), document.removeEventListener('visibilitychange', wake), window.removeEventListener('focus', tickNow), stopTasks?.());
+    return () => (a(), stopEvents?.(), c(), d(), e(), f(), g(), clearInterval(timer), document.removeEventListener('visibilitychange', wake), window.removeEventListener('focus', tickNow), stopTasks?.());
   });
 </script>
+
+<svelte:window onkeydown={(ev) => ev.key === 'Escape' && (addMenu ? (addMenu = false) : viewing ? (viewing = null) : null)} />
 
 <div class="app" class:cals-open={calsOpen}>
   {#if calsOpen}<div class="cals-scrim" onclick={() => (calsOpen = false)} role="presentation"></div>{/if}
   <aside class="sidebar">
-    <div class="section-label">Calendars</div>
+    <div class="cals-head">
+      <span class="section-label">Calendars</span>
+      <button class="icon-btn add-cal" class:on={addMenu} onclick={() => (addMenu = !addMenu)} aria-label="Add a calendar" aria-expanded={addMenu}><Icon name="plus" size={18} stroke={2.2} /></button>
+      {#if addMenu}
+        <div class="menu-scrim" onclick={() => (addMenu = false)} role="presentation"></div>
+        <div class="menu" role="menu">
+          <button role="menuitem" onclick={() => ((addMenu = calsOpen = false), (calSheet = { name: '', color: COLORS[(cals.length + 1) % COLORS.length] }))}><Icon name="plus" size={17} stroke={2.2} /> New calendar</button>
+          <button role="menuitem" onclick={() => ((addMenu = false), fileEl.click())}><Icon name="download" size={17} /> Import a file</button>
+          <button role="menuitem" onclick={() => ((addMenu = calsOpen = false), (subSheet = { url: '', name: '', busy: false, error: '' }))}><Icon name="link" size={17} /> Subscribe to a link</button>
+        </div>
+      {/if}
+    </div>
     {#each cals as c (c.id)}
       <div class="cal-row">
         <button class="check" class:on={!hidden.has(c.id)} style="--ring:var(--c-{c.color})" onclick={() => toggleCal(c.id)} aria-label="Show {c.name}"></button>
@@ -505,15 +586,6 @@
         <button class="icon-btn sm" title={c.from ? 'About this calendar' : 'Edit'} onclick={() => ((calsOpen = false), ((note = ''), (calSheet = { ...c })))}><Icon name="edit" size={15} /></button>
       </div>
     {/each}
-    <button class="btn ghost add" onclick={() => ((calsOpen = false), (calSheet = { name: '', color: COLORS[(cals.length + 1) % COLORS.length] }))}>
-      <Icon name="plus" size={18} stroke={2.2} /> Add calendar
-    </button>
-    <button class="btn ghost add" onclick={() => fileEl.click()}>
-      <Icon name="download" size={18} /> Import .ics file
-    </button>
-    <button class="btn ghost add" onclick={() => ((calsOpen = false), (subSheet = { url: '', name: '', busy: false, error: '' }))}>
-      <Icon name="link" size={18} /> Subscribe to a link
-    </button>
     <input type="file" accept=".ics,text/calendar" multiple hidden bind:this={fileEl} onchange={readFiles} />
 
     <div class="section-label other-apps">From other apps</div>
@@ -539,7 +611,7 @@
         <button class="btn sm" onclick={() => ((cursor = t), scrollToMorning())}>Today</button>
         <button class="icon-btn" onclick={() => move(1)} aria-label="Next"><Icon name="right" /></button>
       </div>
-      <button class="btn primary new" onclick={() => newEvent(mode === 'month' ? t : days.includes(t) ? t : days[0])}><Icon name="plus" size={18} stroke={2.2} /> <span class="lbl">Event</span></button>
+      <button class="btn primary new" onclick={() => newEvent(mode === 'month' ? t : days.includes(t) ? t : days[0])} aria-label="New event" title="New event"><Icon name="plus" size={20} stroke={2.2} /></button>
     </header>
 
     {#if mode === 'week'}
@@ -558,7 +630,8 @@
           {#each days as d}
             <div class="ad-cell">
               {#each onDay(d).allDay as e (e.key)}
-                <button class="pill" class:cont={e.continues} class:on={e.goesOn} style="--c:{colorOf(e)}" title={e.title} onclick={() => open(e)}>
+                {@const a = answerFor(e)}
+                <button class="pill {a ?? ''}" class:cont={e.continues} class:on={e.goesOn} style="--c:{colorOf(e)}" title={e.title} onclick={() => open(e)}>
                   {#if e.series}<svg class="rep" viewBox="0 0 24 24" aria-label="Repeats"><path d="M17 2l4 4-4 4M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 01-3 3H3" /></svg>{/if}{e.continues && d !== days[0] ? '' : e.title}
                 </button>
               {/each}
@@ -575,12 +648,19 @@
           {#each days as d}
             <div class="col" class:today={d === t} style="height:{HOUR * 24}px" use:sizing onpointerdown={(ev) => down(ev, d)} onpointermove={moveDrag} onpointerup={up} onpointercancel={cancelDrag} oncontextmenu={(ev) => (hold || drag) && ev.preventDefault()} role="presentation">
               {#each Array(24) as _, h}<div class="line" style="top:{h * HOUR}px"></div>{/each}
+              <!-- Each event shows as much as fits: its title wraps over the lines it needs, the time
+                   goes below when there's a line left for it, then the place if there's room. -->
               {#each layout(onDay(d).timed) as { e, lane, lanes } (e.key)}
                 {@const top = (mins(e.start) / 60) * HOUR}
                 {@const h = Math.max(22, ((mins(e.end) - mins(e.start)) / 60) * HOUR - 2)}
-                <button class="event" class:short={h < 40} style="--c:{colorOf(e)};top:{top}px;height:{h}px;left:calc({(lane / lanes) * 100}% + 2px);width:calc({100 / lanes}% - 4px)" onclick={() => open(e)}>
-                  <span class="et">{e.title}</span>
-                  <span class="em">{e.continues ? `until ${friendlyTime(e.end === '24:00' ? '00:00' : e.end)}` : friendlyTime(e.start)}{e.location ? ` · ${e.location}` : ''}</span>
+                {@const a = answerFor(e)}
+                {@const where = h >= 76 ? place(e) : ''}
+                {@const room = Math.max(1, Math.floor((h - 5 - (where ? 15 : 0)) / 15))}
+                {@const timeLine = h >= 38 && titleLines(e.title, lanes) < room}
+                <button class="event {a ?? ''}" class:short={h < 38} style="--c:{colorOf(e)};top:{top}px;height:{h}px;left:calc({(lane / lanes) * 100}% + 2px);width:calc({100 / lanes}% - 4px)" onclick={() => open(e)}>
+                  <span class="et" style="-webkit-line-clamp:{timeLine ? room - 1 : room}">{e.title}{#if h < 38} <span class="tm">{friendlyTime(e.start)}</span>{/if}</span>
+                  {#if timeLine}<span class="em">{blockTime(e)}</span>{/if}
+                  {#if where}<span class="em">{where}</span>{/if}
                 </button>
               {/each}
               {#each tasksOn(d).filter((x) => x.time) as x (x.id)}
@@ -606,9 +686,10 @@
           <div class="cell" class:other={parse(d).getMonth() !== parse(cursor).getMonth()} onclick={() => newEvent(d)} role="presentation">
             <button class="num" class:today={d === t} onclick={(ev) => (ev.stopPropagation(), (cursor = d), (mode = 'week'), scrollToMorning())}>{parse(d).getDate()}</button>
             {#each list.slice(0, 3) as e (e.key)}
-              <button class="mev" class:solid={e.row} style="--c:{colorOf(e)}" onclick={(ev) => (ev.stopPropagation(), open(e))}>
+              {@const a = answerFor(e)}
+              <button class="mev {a ?? ''}" class:solid={e.row} style="--c:{colorOf(e)}" onclick={(ev) => (ev.stopPropagation(), open(e))}>
                 {#if !e.row}<span class="dot" style="background:var(--c)"></span>{/if}
-                <span class="mt">{e.title}</span>
+                <span class="mt">{#if !e.row && !e.continues}<span class="mtime">{friendlyTime(e.start)}</span> {/if}{e.title}</span>
               </button>
             {/each}
             {#if list.length > 3}<span class="more caption">+{list.length - 3} more</span>{/if}
@@ -622,8 +703,7 @@
 
 {#if editor}
   <div class="scrim" onclick={(e) => e.target === e.currentTarget && (editor = null)} role="presentation">
-    <form class="sheet" onsubmit={(e) => (e.preventDefault(), editor.readonly || saveEvent())}>
-      <fieldset disabled={editor.readonly}>
+    <form class="sheet" onsubmit={(e) => (e.preventDefault(), saveEvent())}>
       <input class="field title-field" placeholder="New event" bind:value={editor.title} autofocus />
       <div class="form">
         <label class="toggle"><input type="checkbox" bind:checked={editor.all_day} /> <span>All-day</span></label>
@@ -679,13 +759,6 @@
         <input class="field" placeholder="Location" bind:value={editor.location} />
         <textarea class="field" placeholder="Notes" bind:value={editor.notes}></textarea>
       </div>
-      </fieldset>
-      {#if editor.readonly}
-        {@const c = cals.find((c) => c.id === editor.calendar) ?? {}}
-        {#if c.subscribed}<p class="caption view-only"><Icon name="link" size={15} /> From a calendar link; it changes only there.</p>
-        {:else}<p class="caption view-only"><Icon name="people" size={15} /> {sharedNote(c)}</p>{/if}
-        <button type="button" class="btn lg wide" onclick={() => (editor = null)}>Close</button>
-      {:else}
       <div class="actions">
         {#if editor.id}
           <button type="button" class="btn lg danger" onclick={() => deleteEvent()}>Delete</button>
@@ -694,8 +767,79 @@
         {/if}
         <button class="btn lg primary">{editor.id ? 'Save' : 'Add'}</button>
       </div>
-      {/if}
     </form>
+  </div>
+{/if}
+
+{#if viewing}
+  {@const e = viewing}
+  {@const c = calOf(e)}
+  {@const call = meeting(e)}
+  {@const n = notesOf(e.notes)}
+  {@const people = peopleOf(e, mine, chosen(e))}
+  {@const mineAnswer = answerFor(e)}
+  <div class="scrim" onclick={(ev) => ev.target === ev.currentTarget && (viewing = null)} role="presentation">
+    <div class="sheet card" role="dialog" aria-label={e.title} style="--c:{colorOf(e)}">
+      <div class="card-head">
+        <h2 class="title card-title">{e.title}</h2>
+        {#if canEdit(e.calendar)}<button class="icon-btn" onclick={() => edit(e)} aria-label="Edit" title="Edit"><Icon name="edit" size={19} /></button>{/if}
+        <button class="icon-btn" onclick={() => (viewing = null)} aria-label="Close" title="Close"><Icon name="close" size={19} /></button>
+      </div>
+      <p class="when">{whenText(e)}</p>
+      {#if e.series}<p class="caption">{describe(e.series.rrule)}</p>{/if}
+      <p class="caption cal-line"><span class="dot" style="background:var(--c)"></span>{c?.name}{c?.subscribed ? ' · from a link' : c?.from ? ` · ${sharedNote(c)}` : ''}</p>
+
+      {#if call}
+        <button class="join" onclick={() => visit(call.url)}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM16 10l5-3v10l-5-3" /></svg>
+          <span>Join {call.name}</span><span class="host">{call.host}</span>
+        </button>
+      {/if}
+      {#if linkError}<p class="caption error">{linkError}</p>{/if}
+      {#if place(e)}
+        <div class="row"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21zM12 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z" /></svg><span class="wraps">{place(e)}</span></div>
+      {/if}
+      {#if e.url && e.url !== call?.url}
+        <button class="row link" onclick={() => visit(e.url)}><Icon name="link" size={18} /><span class="wraps">{e.url.replace(/^https?:\/\/(www\.)?/, '')}</span></button>
+      {/if}
+      {#if people.length}
+        <button class="row" onclick={() => (peopleOpen = !peopleOpen)} aria-expanded={peopleOpen}>
+          <Icon name="people" size={18} /><span class="wraps">{peopleSummary(people)}</span>
+          <span class="chev" class:open={peopleOpen}><Icon name="chevron" size={16} /></span>
+        </button>
+        {#if peopleOpen}
+          <ul class="people">
+            {#each people as p}
+              <li>
+                <span class="st {p.answer ?? 'none'}" title={{ yes: 'Going', maybe: 'Maybe', no: 'Not going' }[p.answer] ?? 'No answer yet'}>{{ yes: '✓', maybe: '?', no: '✕' }[p.answer] ?? ''}</span>
+                <span class="wraps">{p.name || p.email}</span>
+                {#if p.organizer}<span class="caption">organizer</span>{/if}
+                {#if p.you}<span class="caption">you</span>{/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+      {#if n.text}
+        <p class="notes">{#each linkify(n.text) as part}{#if part.href}<a href={part.href} onclick={(ev) => (ev.preventDefault(), visit(part.href))}>{part.text}</a>{:else}{part.text}{/if}{/each}</p>
+      {/if}
+      {#if n.joining}
+        <button class="row small" onclick={() => (joiningOpen = !joiningOpen)} aria-expanded={joiningOpen}>
+          <span>Joining details</span><span class="chev" class:open={joiningOpen}><Icon name="chevron" size={15} /></span>
+        </button>
+        {#if joiningOpen}
+          <p class="notes caption">{#each linkify(n.joining) as part}{#if part.href}<a href={part.href} onclick={(ev) => (ev.preventDefault(), visit(part.href))}>{part.text}</a>{:else}{part.text}{/if}{/each}</p>
+        {/if}
+      {/if}
+      {#if asksAnswer(e, mine)}
+        <div class="segmented answer" role="group" aria-label="Your answer">
+          {#each [['yes', 'Going'], ['maybe', 'Maybe'], ['no', 'No']] as [v, label]}
+            <button class:on={mineAnswer === v} aria-pressed={mineAnswer === v} onclick={() => setAnswer(e, v)}>{label}</button>
+          {/each}
+        </div>
+        <p class="caption answer-note">Your answer stays on your devices.</p>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -833,9 +977,76 @@
   .share-row { width: 100%; height: 46px; justify-content: flex-start; gap: 10px; margin-top: 18px; color: var(--accent); }
   .share-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .private { margin: 16px 0 0; }
-  .view-only { display: flex; align-items: center; gap: 6px; margin: 16px 0; }
   .wide { width: 100%; }
-  fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+
+  /* The sidebar's + and its menu. */
+  .cals-head { position: relative; display: flex; align-items: center; justify-content: space-between; margin: 0 0 4px; padding-left: 8px; }
+  .cals-head .section-label { margin: 0; }
+  .add-cal { width: 30px; height: 30px; color: var(--accent); }
+  .add-cal.on { background: var(--active); }
+  .menu-scrim { position: fixed; inset: 0; z-index: 70; }
+  .menu {
+    position: absolute; right: 0; top: 34px; z-index: 71; min-width: 210px; padding: 6px; display: grid;
+    background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 14px; box-shadow: var(--shadow-lg);
+    animation: pop 0.2s var(--spring);
+  }
+  .menu button {
+    display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px; border: 0; border-radius: 9px;
+    background: none; color: var(--text); font-size: 15px; font-weight: 500; text-align: left; cursor: pointer;
+  }
+  .menu button:hover { background: var(--hover); }
+  .menu :global(svg) { color: var(--accent); }
+
+  /* Invitations: not answered yet is an outline, maybe is striped, no is faded. */
+  .event.invited, .pill.invited { background: var(--bg); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 70%, transparent); }
+  .event.maybe, .pill.maybe {
+    background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 26%, var(--bg)) 0 6px, color-mix(in srgb, var(--c) 12%, var(--bg)) 6px 12px);
+  }
+  .event.no, .pill.no, .mev.no { opacity: 0.45; }
+  .event.no .et, .pill.no, .mev.no .mt { text-decoration: line-through; }
+  .mev.invited .dot { background: transparent !important; box-shadow: inset 0 0 0 1.5px var(--c); }
+  .mtime { color: var(--text-2); font-weight: 500; font-variant-numeric: tabular-nums; margin-right: 4px; }
+
+  /* The event card. */
+  .card { padding: 22px 22px 24px; }
+  .card-head { display: flex; align-items: flex-start; gap: 4px; }
+  .card-title { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 4px 6px 0 0; }
+  .card-head .icon-btn { flex: none; }
+  .when { margin: 10px 0 2px; font-size: 16px; font-weight: 500; }
+  .card .caption { margin: 2px 0 0; }
+  .cal-line { display: flex; align-items: center; gap: 7px; }
+  .join {
+    display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 18px; padding: 0 16px; height: 50px; border: 0; border-radius: 14px;
+    background: var(--accent); color: var(--on-accent, #fff); font-size: 16px; font-weight: 600; cursor: pointer; transition: filter 0.15s;
+  }
+  .join:hover { filter: brightness(1.08); }
+  .join svg, .row svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .join .host { margin-left: auto; font-size: 13px; font-weight: 500; opacity: 0.8; }
+  .row {
+    display: flex; align-items: center; gap: 12px; width: 100%; min-height: 46px; padding: 10px 2px; margin: 0;
+    border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text); font-size: 15px; text-align: left;
+  }
+  button.row { cursor: pointer; }
+  .card > .row:last-child { border-bottom: 0; }
+  .row > :global(svg), .row > svg { color: var(--text-2); }
+  .row.link { color: var(--accent); }
+  .row.small { min-height: 38px; font-size: 14px; color: var(--text-2); border: 0; }
+  .wraps { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .chev { display: grid; color: var(--text-3); transition: transform 0.18s var(--ease); }
+  .chev.open { transform: rotate(90deg); }
+  .people { list-style: none; margin: 4px 0 6px; padding: 0 0 8px 32px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; font-size: 14px; }
+  .people li { display: flex; align-items: center; gap: 10px; }
+  .st { width: 18px; height: 18px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; box-shadow: inset 0 0 0 1.5px var(--text-3); color: var(--text-3); }
+  .st.yes { box-shadow: none; background: color-mix(in srgb, var(--c-green) 22%, transparent); color: var(--c-green); }
+  .st.maybe { box-shadow: none; background: color-mix(in srgb, var(--c-orange) 22%, transparent); color: var(--c-orange); }
+  .st.no { box-shadow: none; background: color-mix(in srgb, var(--c-red) 20%, transparent); color: var(--c-red); }
+  .notes { margin: 14px 0 0; font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+  .notes.caption { margin: 2px 0 0; font-size: 13px; color: var(--text-2); }
+  .notes a { color: var(--accent); text-decoration: none; }
+  .notes a:hover { text-decoration: underline; }
+  .answer { display: flex; width: 100%; margin-top: 20px; }
+  .answer button { flex: 1; padding: 9px 0; font-size: 15px; }
+  .answer-note { text-align: center; margin-top: 8px !important; }
   .scrim.top { z-index: 120; }
   .back { margin-top: 8px; }
   .sr { visibility: hidden; }
@@ -859,7 +1070,6 @@
   .cal-row .name.wraps { white-space: normal; }
   .icon-btn.sm { width: 28px; height: 28px; opacity: 0; }
   .cal-row:hover .icon-btn.sm { opacity: 1; }
-  .add { margin-top: 6px; padding: 0 10px; }
   .other-apps { margin-top: 28px; }
   .sidebar .caption { padding: 0 8px; margin: 4px 0 0; }
 
@@ -869,7 +1079,7 @@
   .year { font-weight: 400; color: var(--text-2); }
   .nav { display: flex; align-items: center; gap: 2px; }
   .btn.sm { height: 32px; padding: 0 14px; font-size: 14px; }
-  .new { height: 36px; padding: 0 16px; }
+  .new { width: 36px; height: 36px; padding: 0; }
 
   .week { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   /* Pad by the grid's scrollbar width (--sb) so these columns line up with the grid below. */
@@ -898,17 +1108,22 @@
   .col.today { background: color-mix(in srgb, var(--accent) 3%, transparent); }
   .line { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); pointer-events: none; }
   .event {
-    position: absolute; border: 0; border-radius: 7px; padding: 4px 8px; text-align: left; overflow: hidden; cursor: pointer;
+    position: absolute; border: 0; border-radius: 7px; padding: 3px 8px; text-align: left; overflow: hidden; cursor: pointer;
     background: color-mix(in srgb, var(--c) 24%, var(--bg)); border-left: 3px solid var(--c);
     color: color-mix(in srgb, var(--c), var(--text) 45%); display: flex; flex-direction: column; gap: 1px;
     transition: filter 0.15s, transform 0.12s var(--ease); z-index: 1;
   }
   .event:hover { filter: brightness(1.12); }
   .event:active { transform: scale(0.98); }
-  .event.short { flex-direction: row; gap: 6px; align-items: center; padding: 2px 8px; }
+  .event.short { justify-content: center; padding: 2px 8px; }
   .event.ghost { --c: var(--accent); opacity: 0.85; pointer-events: none; border-style: dashed; }
-  .et { font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .em { font-size: 12px; opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The title wraps (long course codes break too) over the lines the block has room for. */
+  .et {
+    font-size: 13px; font-weight: 650; line-height: 15px; flex: none; overflow: hidden; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical;
+  }
+  .tm { font-size: 12px; font-weight: 500; opacity: 0.85; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .em { font-size: 12px; line-height: 15px; opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; font-variant-numeric: tabular-nums; }
   .task-mark { position: absolute; left: 2px; right: 2px; font-size: 12px; padding: 2px 6px; border-radius: 6px; z-index: 2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .now { position: absolute; left: -5px; right: 0; height: 2px; background: var(--c-red); z-index: 3; pointer-events: none; }
   .now::before { content: ''; position: absolute; left: 0; top: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--c-red); }
@@ -953,10 +1168,13 @@
       box-shadow: var(--shadow-lg);
     }
     .main { padding: 18px 12px 0; }
+    /* The title and + on the first line; the view and the dates below. */
     header { gap: 8px; }
-    .large-title { font-size: 28px; width: 100%; }
-    .lbl { display: none; }
-    .new { width: 36px; padding: 0; }
+    .large-title { font-size: 28px; flex: 1 1 calc(100% - 52px); min-width: 0; }
+    header .new { order: 1; }
+    header .only-narrow, header .segmented, header .nav { order: 2; }
+    header .spacer { display: none; }
+    header .nav { margin-left: auto; }
     .mh { text-align: center; padding: 0 0 6px; }
     .mev .mt { display: none; }
     .num { align-self: center; }

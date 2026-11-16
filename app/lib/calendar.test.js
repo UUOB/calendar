@@ -271,3 +271,86 @@ test('a changed occurrence keeps its series\' time zone', () => {
   const list = expand([ny, { ...op.value, id: op.id, container: 'c1' }], '2026-11-08', '2026-11-11');
   assert.deepEqual(list.map((x) => [x.title, x.start]), [['Call (one off)', o.start]]);
 });
+
+// ------------------------------------------------------------ invitations
+import { meeting, notesOf, linkify, peopleOf, peopleSummary, answerOf, asksAnswer, plain } from './details.js';
+
+const INVITE = [
+  'BEGIN:VCALENDAR',
+  'X-WR-CALNAME:alex@example.test',
+  'BEGIN:VEVENT',
+  'DTSTART:20261116T190000Z',
+  'DTEND:20261116T200000Z',
+  'RRULE:FREQ=WEEKLY;BYDAY=MO',
+  'UID:plan@example.test',
+  'SUMMARY:Team planning',
+  'ORGANIZER;CN=Sam Example:mailto:sam@example.test',
+  'ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;CN=Sam Example:mailto:sam@example.test',
+  'ATTENDEE;CUTYPE=INDIVIDUAL;PARTSTAT=TENTATIVE;CN=kim@example.test:mailto:kim@example.test',
+  'ATTENDEE;CUTYPE=INDIVIDUAL;PARTSTAT=DECLINED;CN="Lee, J.":mailto:lee@example.test',
+  'ATTENDEE;CUTYPE=INDIVIDUAL;PARTSTAT=NEEDS-ACTION:mailto:alex@example.test',
+  'ATTENDEE;CUTYPE=ROOM;PARTSTAT=ACCEPTED;CN=Room 2:mailto:room2@resource.example.test',
+  'X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij',
+  'DESCRIPTION:Agenda: https://example.test/agenda.\\n\\n-::~:~::~:~:~:~:~:~:~:~::~:~::-\\nJoin with Google Meet: https://meet.google.com/abc-defg-hij\\nOr dial: (US) +1 555-0100 PIN: 123456#\\n\\nPlease do not edit this section.\\n-::~:~::~:~:~:~:~:~:~:~::~:~::-',
+  'END:VEVENT',
+  'END:VCALENDAR',
+].join('\r\n');
+
+test('invitations: organizer, people and answers, the meeting link and your address', () => {
+  const r = parseIcs(INVITE);
+  assert.equal(r.owner, 'alex@example.test');
+  const e = r.events[0];
+  assert.deepEqual(e.organizer, { name: 'Sam Example', email: 'sam@example.test' });
+  assert.deepEqual(e.attendees.map((a) => [a.name, a.email, a.answer]), [
+    ['Sam Example', 'sam@example.test', 'yes'],
+    [undefined, 'kim@example.test', 'maybe'],
+    ['Lee, J.', 'lee@example.test', 'no'],
+    [undefined, 'alex@example.test', null],
+  ]);
+  assert.equal(e.conference, 'https://meet.google.com/abc-defg-hij');
+  // They survive being written and read again, and saving the event from the sheet.
+  assert.deepEqual(parseIcs(writeIcs([e])).events[0].attendees, e.attendees);
+  const ed = editorFor({ ...e, container: 'c1' });
+  ed.title = 'Team planning (new room)';
+  const saved = planSave(ed, null, [])[0].value;
+  assert.deepEqual([saved.attendees, saved.organizer, saved.conference], [e.attendees, e.organizer, e.conference]);
+  // An occurrence of the series keeps them too, for "only this one".
+  const o = expand([{ ...e, container: 'c1' }], '2026-11-23', '2026-11-24')[0]; // Monday 19:00 UTC: Tuesday in Tokyo
+  const ed2 = editorFor(o, [{ ...e, container: 'c1' }]);
+  assert.deepEqual(planSave(ed2, 'this', [])[0].value.attendees, e.attendees);
+  // Fields a newer app version writes are kept by an edit here.
+  const later = editorFor({ id: 'x', container: 'c1', title: 'A', date: '2026-11-18', start: '09:00', end: '10:00', alerts: [10] });
+  assert.deepEqual(planSave(later, null, [])[0].value.alerts, [10]);
+});
+
+test('the card: join link, notes without the joining block, people and your answer', () => {
+  const e = parseIcs(INVITE).events[0];
+  assert.deepEqual(meeting(e), { url: 'https://meet.google.com/abc-defg-hij', name: 'Google Meet', host: 'meet.google.com' });
+  assert.deepEqual(meeting({ location: 'Zoom: https://us02web.zoom.us/j/123?pwd=x' }).name, 'Zoom');
+  assert.equal(meeting({ notes: 'Lunch at https://example.test' }), null);
+  const n = notesOf(e.notes);
+  assert.equal(n.text, 'Agenda: https://example.test/agenda.');
+  assert.match(n.joining, /^Join with Google Meet/);
+  assert.doesNotMatch(n.joining, /do not edit/);
+  // A divider that never closes doesn't hide the rest of the notes.
+  assert.deepEqual(notesOf('Bring snacks\n____________________________\nParking is behind the hall'), { text: 'Bring snacks\n____________________________\nParking is behind the hall', joining: '' });
+  assert.deepEqual(linkify(n.text), [{ text: 'Agenda: ' }, { text: 'example.test/agenda', href: 'https://example.test/agenda' }, { text: '.' }]);
+  assert.equal(plain('Hi<br>see <a href="https://x.test">https://x.test</a> &amp; more'), 'Hi\nsee https://x.test & more');
+
+  const mine = new Set(['alex@example.test']);
+  const people = peopleOf(e, mine);
+  assert.deepEqual(people.map((p) => [p.email, p.organizer, p.you]), [
+    ['sam@example.test', true, false],
+    ['kim@example.test', false, false],
+    ['lee@example.test', false, false],
+    ['alex@example.test', false, true],
+  ]);
+  assert.equal(peopleSummary(people), '4 people · 1 yes · 1 maybe · 1 no');
+  assert.equal(answerOf(e, mine, null), 'invited');
+  assert.equal(answerOf(e, mine, 'maybe'), 'maybe');
+  assert.equal(peopleOf(e, mine, 'yes').find((p) => p.you).answer, 'yes');
+  assert.equal(answerOf(e, new Set(), null), null); // not knowing you: no guess
+  assert.equal(asksAnswer(e, mine), true);
+  assert.equal(asksAnswer(e, new Set(['sam@example.test'])), false); // you organize it
+  assert.equal(answerOf({ title: 'Lunch' }, mine, null), null);
+});
