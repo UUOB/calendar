@@ -74,7 +74,7 @@ export function byDay(instances, from, to) {
     for (let d = o.date > from ? o.date : from; d <= last && d <= to; d = addDays(d, 1)) {
       const day = days.get(d);
       if (!day) continue;
-      if (onRow) day.allDay.push({ ...o, continues: d > o.date, goesOn: d < last });
+      if (onRow) day.allDay.push({ ...o, row: true, continues: d > o.date, goesOn: d < last });
       else {
         const start = d === o.date ? o.start : '00:00';
         const end = d === last ? o.end : '24:00';

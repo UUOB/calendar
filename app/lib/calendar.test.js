@@ -259,3 +259,15 @@ test('a series in another time zone keeps its zone when its time changes', () =>
   const [op] = planSave(ed, 'all', [ny]); // saved without changes
   assert.deepEqual([op.value.date, op.value.start, op.value.end, op.value.tz], ['2026-11-02', '09:00', '10:00', 'America/New_York']);
 });
+
+test('a changed occurrence keeps its series\' time zone', () => {
+  const ny = { id: 'n', container: 'c1', title: 'Call', all_day: false, date: '2026-11-02', start: '09:00', end: '10:00', tz: 'America/New_York', rrule: 'FREQ=WEEKLY' };
+  const o = expand([ny], '2026-11-08', '2026-11-11').find((x) => x.occurrence === '2026-11-09');
+  const ed = editorFor(o, [ny]);
+  ed.title = 'Call (one off)';
+  const [op] = planSave(ed, 'this', [ny]);
+  assert.deepEqual([op.value.date, op.value.start, op.value.end, op.value.tz], ['2026-11-09', '09:00', '10:00', 'America/New_York']);
+  // and it still shows at the series' time, in place of that occurrence
+  const list = expand([ny, { ...op.value, id: op.id, container: 'c1' }], '2026-11-08', '2026-11-11');
+  assert.deepEqual(list.map((x) => [x.title, x.start]), [['Call (one off)', o.start]]);
+});

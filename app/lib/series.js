@@ -130,7 +130,14 @@ export function planSave(ed, scope, events = []) {
   }
   if (scope === 'this') {
     const id = ed.changed ? ed.id : `${s.id}.${ed.occurrence.replaceAll('-', '')}`;
-    ops.push({ put: s.container, id, value: record({ ...t, recurrence_of: s.id, recurrence_date: ed.occurrence, uid: s.uid }) });
+    // In the series' time zone, like the rest of it (the sheet shows this device's time).
+    let when = t;
+    if (s.tz && !t.all_day) {
+      const a = fromLocal(t.date, t.start, s.tz);
+      const b = fromLocal(t.end_date, t.end, s.tz);
+      when = { ...t, date: a.date, start: a.time, end_date: b.date, end: b.time, tz: s.tz };
+    }
+    ops.push({ put: s.container, id, value: record({ ...when, recurrence_of: s.id, recurrence_date: ed.occurrence, uid: s.uid }) });
     return ops;
   }
   // All of them: the series moves by as much as this occurrence was moved.

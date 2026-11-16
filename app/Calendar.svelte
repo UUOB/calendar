@@ -3,6 +3,12 @@
   import Icon from '../uuob/ui/Icon.svelte';
   import { uuob } from '../uuob/ui/uuob.js';
   import { today, iso, parse, addDays, pad, friendlyTime } from '../uuob/ui/dates.js';
+  import { expand, byDay } from './lib/instances.js';
+  import { editorFor, planSave, planDelete, asksScope } from './lib/series.js';
+  import { daysBetween } from './lib/zones.js';
+  import { parseIcs, writeIcs } from './lib/ical.js';
+  import { record } from './lib/series.js';
+  import { calendarUrl, fetchText, saveText } from './lib/native.js';
 
   // Every calendar is a container of its own, so it can be shared with other
   // people. The first calendar lives in the app's first container, which
@@ -10,6 +16,10 @@
   const eventsIn = (calendar) => uuob.collection('events', calendar);
   const firstCal = uuob.collection('calendars'); // the first calendar's { name, color }
   const prefsC = uuob.collection('prefs'); // synced preferences, in our own container
+  // Calendar links you subscribed to, by calendar. In the private first
+  // container: a link like Google's secret address is a key to that calendar,
+  // so it is not shared along with the calendar.
+  const subsC = uuob.collection('subscriptions');
   const COLORS = ['blue', 'red', 'orange', 'yellow', 'green', 'teal', 'purple', 'pink'];
   const HOUR = 52; // px per hour
 
@@ -23,15 +33,23 @@
       .map((c) => (c.main ? { created: 0, ...c, ...first, id: c.id } : { created: 1, color: 'blue', ...infos.find((i) => i.container === c.id), ...c }))
       .sort((x, y) => y.main - x.main || x.created - y.created),
   );
-  const canEdit = (id) => cals.find((c) => c.id === id)?.canWrite !== false;
-  const stored = ({ container, calendar, readonly, ...e }) => e; // what is saved: without the fields we add
+  const canEdit = (id) => {
+    const c = cals.find((c) => c.id === id);
+    return c?.canWrite !== false && !c?.subscribed;
+  };
   let hidden = $state(new Set());
   let mode = $state('week'); // 'week' | 'month'
   let cursor = $state(today());
   let narrow = $state(false);
-  let editor = $state(null); // event being edited / created
+  let editor = $state(null); // event being edited / created (see lib/series.js)
+  let scopeAsk = $state(null); // 'save' | 'delete': only this occurrence, or all?
   let calSheet = $state(null);
   let calsOpen = $state(false); // phones: the calendar list, shown as a sheet
+  let importSheet = $state(null); // { items: [{ name, r, target }], busy, done, total, result }
+  let subSheet = $state(null); // { url, name, color, busy, error }
+  let subs = $state([]); // [{ id: calendar, url, refreshed }]
+  let fileEl = $state();
+  let note = $state(''); // a short message after export / refresh
   let showTasks = $state(false);
   let tasks = $state([]);
   let drag = $state(null);
@@ -68,7 +86,12 @@
   const calOf = (e) => cals.find((c) => c.id === e.calendar) ?? cals[0];
   const colorOf = (e) => `var(--c-${calOf(e)?.color ?? 'blue'})`;
   const shown = $derived(events.filter((e) => !hidden.has(e.calendar)));
-  const onDay = (d) => shown.filter((e) => e.date === d);
+  // What each day on screen shows: occurrences of repeating events, events
+  // longer than a day on each of their days (lib/instances.js).
+  const range = $derived(mode === 'month' ? [monthDays[0], monthDays[41]] : [days[0], days[days.length - 1]]);
+  const dayMap = $derived(byDay(expand(shown, range[0], range[1]), range[0], range[1]));
+  const NONE = { allDay: [], timed: [] };
+  const onDay = (d) => dayMap.get(d) ?? NONE;
   const tasksOn = (d) => (showTasks ? tasks.filter((x) => x.due === d && !x.done) : []);
   const mins = (hhmm) => (hhmm ? Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3)) : 0);
   const hhmm = (m) => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
@@ -112,10 +135,10 @@
   }
 
   function newEvent(date, start = '09:00', end = null) {
-    editor = {
-      title: '', date, all_day: false, start, end: end ?? hhmm(mins(start) + 60),
-      calendar: (cals.find((c) => c.canWrite && !hidden.has(c.id)) ?? cals.find((c) => c.canWrite))?.id ?? uuob.self, notes: '', location: '',
-    };
+    editor = editorFor({
+      date, start, end: end ?? hhmm(mins(start) + 60),
+      calendar: (cals.find((c) => canEdit(c.id) && !hidden.has(c.id)) ?? cals.find((c) => canEdit(c.id)))?.id ?? uuob.self,
+    });
   }
 
   // Drag on the grid to create an event. A finger has to rest for a moment
@@ -163,20 +186,43 @@
     return { destroy: () => node.removeEventListener('touchmove', stop) };
   }
 
-  async function saveEvent() {
-    const e = { ...editor, title: editor.title.trim() || 'New event' };
-    if (!e.all_day && mins(e.end) <= mins(e.start)) e.end = hhmm(Math.min(mins(e.start) + 60, 1439));
-    editor = null;
-    await eventsIn(e.calendar).put(stored(e));
-    // Changing an event's calendar moves it to that calendar's container.
-    if (e.id && e.container && e.container !== e.calendar) await eventsIn(e.container).delete(e.id);
+  // Writes what lib/series.js worked out. Moving an event to another
+  // calendar moves it to that calendar's container.
+  async function apply(ops) {
+    for (const o of ops) {
+      if (o.put) await eventsIn(o.put).put(o.value, o.id);
+      else await eventsIn(o.delete).delete(o.id);
+    }
   }
-  async function deleteEvent() {
-    const { id, container } = editor;
-    editor = null;
-    await eventsIn(container).delete(id);
+  function saveEvent(scope) {
+    if (editor.series && !scope) {
+      if (asksScope(editor)) return void (scopeAsk = 'save');
+      scope = 'all';
+    }
+    const ops = planSave(editor, scope, events);
+    editor = scopeAsk = null;
+    apply(ops);
   }
-  const open = (e) => (editor = { ...e, readonly: !canEdit(e.calendar) });
+  function deleteEvent(scope) {
+    if (editor.series && !scope) return void (scopeAsk = 'delete');
+    const ops = planDelete(editor, scope, events);
+    editor = scopeAsk = null;
+    apply(ops);
+  }
+  const open = (e) => (editor = { ...editorFor(e, events), readonly: !canEdit(e.calendar) });
+  // A new start date keeps the event's length in days.
+  function moveStart(date) {
+    if (!date) return;
+    const span = Math.max(0, daysBetween(editor.date, editor.end_date ?? editor.date));
+    editor.date = date;
+    editor.end_date = addDays(date, span);
+  }
+  const WEEK = [['MO', 'M'], ['TU', 'T'], ['WE', 'W'], ['TH', 'T'], ['FR', 'F'], ['SA', 'S'], ['SU', 'S']];
+  function toggleDay(d) {
+    const days = editor.repeat.days.includes(d) ? editor.repeat.days.filter((x) => x !== d) : [...editor.repeat.days, d];
+    if (days.length) editor.repeat.days = days;
+  }
+  const unit = (freq, n) => ({ DAILY: 'day', WEEKLY: 'week', MONTHLY: 'month', YEARLY: 'year' })[freq] + (n > 1 ? 's' : '');
 
   async function saveCal() {
     const { id, main, color, created } = calSheet;
@@ -194,6 +240,7 @@
     const { id } = calSheet;
     calSheet = null;
     await uuob.containers.delete(id);
+    if (subs.some((x) => x.id === id)) await subsC.delete(id);
   }
   function share(c) {
     calSheet = null;
@@ -224,10 +271,163 @@
     }
   }
 
+  // ------------------------------------------------ import, export, subscribe
+  // Every save refreshes what's on screen; while hundreds are written, the
+  // screen waits and reads them once at the end.
+  let stopEvents = null;
+  function watchEvents() {
+    stopEvents?.();
+    stopEvents = uuob.all('events').subscribe((r) => (all = r));
+  }
+  async function quietly(work) {
+    stopEvents?.();
+    stopEvents = null;
+    try {
+      return await work();
+    } finally {
+      watchEvents();
+    }
+  }
+  async function newCalendar(name, extra = {}) {
+    const id = await uuob.containers.create(name.slice(0, 64) || 'Calendar');
+    await uuob.collection('calendar', id).put({ color: COLORS[(cals.length + 1) % COLORS.length], created: Date.now(), ...extra }, 'info');
+    return id;
+  }
+
+  async function readFiles(ev) {
+    const files = [...(ev.currentTarget.files ?? [])];
+    ev.currentTarget.value = '';
+    if (!files.length) return;
+    const items = [];
+    for (const f of files) {
+      try {
+        const r = parseIcs(await f.text());
+        items.push({ name: r.name ?? f.name.replace(/\.ics$/i, ''), r, target: 'new' });
+      } catch {
+        items.push({ name: f.name, error: 'This file could not be read as a calendar.' });
+      }
+    }
+    calsOpen = false;
+    importSheet = { items, busy: false, done: 0, total: items.reduce((n, i) => n + (i.r?.events.length ?? 0), 0), result: null };
+  }
+
+  async function runImport() {
+    const s = importSheet;
+    s.busy = true;
+    try {
+      await quietly(() => importAll(s));
+    } catch (e) {
+      s.busy = false;
+      s.result = { events: s.done, unreadable: 0, zones: [], error: e?.message || 'The import stopped.' };
+    }
+  }
+  async function importAll(s) {
+    let events = 0;
+    let unreadable = 0;
+    const zones = new Set();
+    for (const item of s.items.filter((i) => i.r?.events.length)) {
+      const cal = item.target === 'new' ? await newCalendar(item.name) : item.target;
+      for (const e of item.r.events) {
+        await eventsIn(cal).put(record(e), e.id);
+        s.done++;
+        events++;
+      }
+      unreadable += item.r.unreadableRules;
+      item.r.zones.forEach((z) => zones.add(z));
+    }
+    s.busy = false;
+    s.result = { events, unreadable, zones: [...zones] };
+  }
+
+  /** Puts the link's events into its calendar: new and changed ones are
+   *  written, ones no longer at the link are removed. */
+  async function refresh(sub) {
+    const r = parseIcs(await fetchText(sub.url));
+    const keep = new Set(r.events.map((e) => e.id));
+    const gone = all.filter((e) => e.container === sub.id && !keep.has(e.id));
+    await quietly(async () => {
+      for (const e of r.events) await eventsIn(sub.id).put(record(e), e.id);
+      for (const e of gone) await eventsIn(sub.id).delete(e.id);
+    });
+    await subsC.put({ url: sub.url, refreshed: Date.now() }, sub.id);
+    return r;
+  }
+
+  async function subscribe() {
+    const s = subSheet;
+    const url = calendarUrl(s.url);
+    if (!url) return void (s.error = 'That doesn\'t look like a calendar link.');
+    s.busy = true;
+    s.error = '';
+    try {
+      const r = parseIcs(await fetchText(url));
+      const name = s.name.trim() || r.name || nameFromUrl(url);
+      const id = await newCalendar(name, { subscribed: true });
+      await subsC.put({ url, refreshed: 0 }, id);
+      await refresh({ id, url });
+      subSheet = null;
+    } catch (e) {
+      s.busy = false;
+      s.error = e?.message || 'The link could not be read.';
+    }
+  }
+
+  // ".../CzechHolidays.ics" -> "CzechHolidays"; Google's ".../basic.ics" says nothing, so the site's name.
+  function nameFromUrl(url) {
+    const u = new URL(url);
+    const file = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() ?? '').replace(/\.ics$/i, '');
+    return file && !/^(basic|calendar|feed|ical|public|full)$/i.test(file) ? file : u.hostname.replace(/^www\./, '');
+  }
+
+  async function refreshNow(id) {
+    const sub = subs.find((x) => x.id === id);
+    if (!sub) return;
+    note = 'Updating…';
+    try {
+      const r = await refresh(sub);
+      note = `Updated: ${r.events.length} events.`;
+    } catch (e) {
+      note = e?.message || 'The link could not be read.';
+    }
+  }
+
+  // Calendar links are read again when the app opens, at most every few hours.
+  let refreshedOnce = false;
+  async function refreshDue(list) {
+    if (refreshedOnce || !list.length) return;
+    refreshedOnce = true;
+    for (const sub of list) {
+      if (Date.now() - (sub.refreshed ?? 0) > 3 * 3600 * 1000 && containers.some((c) => c.id === sub.id)) await refresh(sub).catch(() => {});
+    }
+  }
+
+  async function exportCal(c) {
+    const list = all.filter((e) => e.container === c.id).map((e) => ({ ...record(e), id: e.id }));
+    const file = `${c.name.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Calendar'}.ics`;
+    try {
+      if (await saveText(file, writeIcs(list, c.name))) note = `Saved ${list.length} events as ${file}.`;
+    } catch (e) {
+      note = e?.message || 'The file could not be saved.';
+    }
+  }
+
+  const ago = (ms) => {
+    if (!ms) return 'not yet';
+    const m = Math.round((Date.now() - ms) / 60000);
+    return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+  };
+
   function toggleCal(id) {
     const h = new Set(hidden);
     h.has(id) ? h.delete(id) : h.add(id);
     hidden = h;
+    savePrefs();
+  }
+  // Which calendars are hidden and whether tasks show, kept with your
+  // preferences (the whole record each time: a save replaces it).
+  let prefsLoaded = false;
+  function savePrefs() {
+    if (prefsLoaded) prefsC.put({ show_tasks: showTasks, hidden: [...hidden] }, 'calendar');
   }
 
   // Showing tasks needs read access to the Tasks app's container.
@@ -245,7 +445,7 @@
         return; /* no Tasks app */
       }
     }
-    if (save) prefsC.put({ show_tasks: showTasks }, 'calendar');
+    if (save) savePrefs();
   }
 
   async function scrollToMorning() {
@@ -261,11 +461,20 @@
       const p = r.find((c) => c.id === 'personal');
       if (p) first = { name: p.name, color: p.color };
     });
-    const b = uuob.all('events').subscribe((r) => (all = r));
+    watchEvents();
     const c = uuob.all('calendar').subscribe((r) => (infos = r));
     const d = uuob.containers.subscribe((r) => (containers = r));
+    const e = subsC.subscribe((r) => {
+      subs = r;
+      // Once the calendars are known, so a link whose calendar is gone isn't read.
+      setTimeout(() => refreshDue(r), 1500);
+    });
     moveOldCalendars().catch(() => {});
-    prefsC.get('calendar').then((p) => p?.show_tasks && toggleTasks(false));
+    prefsC.get('calendar').then((p) => {
+      if (p?.hidden) hidden = new Set(p.hidden);
+      prefsLoaded = true;
+      if (p?.show_tasks) toggleTasks(false);
+    }, () => (prefsLoaded = true));
     const tickNow = () => (now = new Date());
     const timer = setInterval(tickNow, 30000);
     // Timers pause while the Mac sleeps or the window is hidden; catch up on return.
@@ -273,7 +482,7 @@
     document.addEventListener('visibilitychange', wake);
     window.addEventListener('focus', tickNow);
     scrollToMorning();
-    return () => (a(), b(), c(), d(), clearInterval(timer), document.removeEventListener('visibilitychange', wake), window.removeEventListener('focus', tickNow), stopTasks?.());
+    return () => (a(), stopEvents?.(), c(), d(), e(), clearInterval(timer), document.removeEventListener('visibilitychange', wake), window.removeEventListener('focus', tickNow), stopTasks?.());
   });
 </script>
 
@@ -285,18 +494,26 @@
       <div class="cal-row">
         <button class="check" class:on={!hidden.has(c.id)} style="--ring:var(--c-{c.color})" onclick={() => toggleCal(c.id)} aria-label="Show {c.name}"></button>
         <span class="name">{c.name}</span>
+        {#if c.subscribed}<span class="shared-mark" title="Subscribed to a link"><Icon name="link" size={15} /></span>{/if}
         {#if c.from || c.sharedWith?.length}<span class="shared-mark" title={sharedNote(c)}><Icon name="people" size={15} /></span>{/if}
-        <button class="icon-btn sm" title={c.from ? 'About this calendar' : 'Edit'} onclick={() => ((calsOpen = false), (calSheet = { ...c }))}><Icon name="edit" size={15} /></button>
+        <button class="icon-btn sm" title={c.from ? 'About this calendar' : 'Edit'} onclick={() => ((calsOpen = false), ((note = ''), (calSheet = { ...c })))}><Icon name="edit" size={15} /></button>
       </div>
     {/each}
     <button class="btn ghost add" onclick={() => ((calsOpen = false), (calSheet = { name: '', color: COLORS[(cals.length + 1) % COLORS.length] }))}>
       <Icon name="plus" size={18} stroke={2.2} /> Add calendar
     </button>
+    <button class="btn ghost add" onclick={() => fileEl.click()}>
+      <Icon name="download" size={18} /> Import .ics file
+    </button>
+    <button class="btn ghost add" onclick={() => ((calsOpen = false), (subSheet = { url: '', name: '', busy: false, error: '' }))}>
+      <Icon name="link" size={18} /> Subscribe to a link
+    </button>
+    <input type="file" accept=".ics,text/calendar" multiple hidden bind:this={fileEl} onchange={readFiles} />
 
-    <div class="section-label other">From other apps</div>
+    <div class="section-label other-apps">From other apps</div>
     <div class="cal-row">
       <button class="check" class:on={showTasks} style="--ring:var(--text-2)" onclick={() => toggleTasks()} aria-label="Show tasks"></button>
-      <span class="name">Tasks with dates</span>
+      <span class="name wraps">Tasks with dates</span>
       {#if !showTasks}<Icon name="lock" size={14} />{/if}
     </div>
     {#if !showTasks}<p class="caption">Asks to read your Tasks data.</p>{/if}
@@ -334,8 +551,10 @@
           <div class="gutter caption">all-day</div>
           {#each days as d}
             <div class="ad-cell">
-              {#each onDay(d).filter((e) => e.all_day) as e (e.id)}
-                <button class="pill" style="--c:{colorOf(e)}" onclick={() => open(e)}>{e.title}</button>
+              {#each onDay(d).allDay as e (e.key)}
+                <button class="pill" class:cont={e.continues} class:on={e.goesOn} style="--c:{colorOf(e)}" title={e.title} onclick={() => open(e)}>
+                  {#if e.series}<svg class="rep" viewBox="0 0 24 24" aria-label="Repeats"><path d="M17 2l4 4-4 4M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 01-3 3H3" /></svg>{/if}{e.continues && d !== days[0] ? '' : e.title}
+                </button>
               {/each}
               {#each tasksOn(d).filter((x) => !x.time) as x (x.id)}
                 <div class="pill task"><span class="tick"></span>{x.title}</div>
@@ -350,12 +569,12 @@
           {#each days as d}
             <div class="col" class:today={d === t} style="height:{HOUR * 24}px" use:sizing onpointerdown={(ev) => down(ev, d)} onpointermove={moveDrag} onpointerup={up} onpointercancel={cancelDrag} oncontextmenu={(ev) => (hold || drag) && ev.preventDefault()} role="presentation">
               {#each Array(24) as _, h}<div class="line" style="top:{h * HOUR}px"></div>{/each}
-              {#each layout(onDay(d)) as { e, lane, lanes } (e.id)}
+              {#each layout(onDay(d).timed) as { e, lane, lanes } (e.key)}
                 {@const top = (mins(e.start) / 60) * HOUR}
                 {@const h = Math.max(22, ((mins(e.end) - mins(e.start)) / 60) * HOUR - 2)}
                 <button class="event" class:short={h < 40} style="--c:{colorOf(e)};top:{top}px;height:{h}px;left:calc({(lane / lanes) * 100}% + 2px);width:calc({100 / lanes}% - 4px)" onclick={() => open(e)}>
                   <span class="et">{e.title}</span>
-                  <span class="em">{friendlyTime(e.start)}{e.location ? ` · ${e.location}` : ''}</span>
+                  <span class="em">{e.continues ? `until ${friendlyTime(e.end === '24:00' ? '00:00' : e.end)}` : friendlyTime(e.start)}{e.location ? ` · ${e.location}` : ''}</span>
                 </button>
               {/each}
               {#each tasksOn(d).filter((x) => x.time) as x (x.id)}
@@ -377,12 +596,12 @@
       <div class="month">
         {#each monthDays.slice(0, 7) as d}<div class="mh">{parse(d).toLocaleDateString(undefined, { weekday: narrow ? 'narrow' : 'short' })}</div>{/each}
         {#each monthDays as d}
-          {@const list = [...onDay(d).sort((a, b) => (a.all_day ? -1 : mins(a.start)) - (b.all_day ? -1 : mins(b.start)))]}
+          {@const list = [...onDay(d).allDay, ...[...onDay(d).timed].sort((a, b) => mins(a.start) - mins(b.start))]}
           <div class="cell" class:other={parse(d).getMonth() !== parse(cursor).getMonth()} onclick={() => newEvent(d)} role="presentation">
             <button class="num" class:today={d === t} onclick={(ev) => (ev.stopPropagation(), (cursor = d), (mode = 'week'), scrollToMorning())}>{parse(d).getDate()}</button>
-            {#each list.slice(0, 3) as e (e.id)}
-              <button class="mev" class:solid={e.all_day} style="--c:{colorOf(e)}" onclick={(ev) => (ev.stopPropagation(), open(e))}>
-                {#if !e.all_day}<span class="dot" style="background:var(--c)"></span>{/if}
+            {#each list.slice(0, 3) as e (e.key)}
+              <button class="mev" class:solid={e.row} style="--c:{colorOf(e)}" onclick={(ev) => (ev.stopPropagation(), open(e))}>
+                {#if !e.row}<span class="dot" style="background:var(--c)"></span>{/if}
                 <span class="mt">{e.title}</span>
               </button>
             {/each}
@@ -402,12 +621,49 @@
       <input class="field title-field" placeholder="New event" bind:value={editor.title} autofocus />
       <div class="form">
         <label class="toggle"><input type="checkbox" bind:checked={editor.all_day} /> <span>All-day</span></label>
-        <label class="stack">Date<input class="field" type="date" bind:value={editor.date} required /></label>
-        {#if !editor.all_day}
-          <div class="two">
-            <label class="stack">Starts<input class="field" type="time" bind:value={editor.start} required /></label>
-            <label class="stack">Ends<input class="field" type="time" bind:value={editor.end} required /></label>
+        <div class="two" class:one={editor.all_day}>
+          <label class="stack">Starts<input class="field" type="date" value={editor.date} onchange={(e) => moveStart(e.currentTarget.value)} required /></label>
+          {#if !editor.all_day}<label class="stack"><span class="sr">Start time</span><input class="field" type="time" bind:value={editor.start} required /></label>{/if}
+        </div>
+        <div class="two" class:one={editor.all_day}>
+          <label class="stack">Ends<input class="field" type="date" bind:value={editor.end_date} min={editor.date} required /></label>
+          {#if !editor.all_day}<label class="stack"><span class="sr">End time</span><input class="field" type="time" bind:value={editor.end} required /></label>{/if}
+        </div>
+        <label class="stack">Repeat
+          <select class="field" bind:value={editor.repeat.freq}>
+            <option value="NONE">Never</option>
+            <option value="DAILY">Every day</option>
+            <option value="WEEKLY">Every week</option>
+            <option value="MONTHLY">Every month</option>
+            <option value="YEARLY">Every year</option>
+            {#if editor.repeat.raw}<option value="CUSTOM">{editor.repeat.label}</option>{/if}
+          </select>
+        </label>
+        {#if editor.repeat.freq === 'WEEKLY'}
+          <div class="weekdays" role="group" aria-label="On these days">
+            {#each WEEK as [code, letter]}
+              <button type="button" class="wday" class:on={editor.repeat.days.includes(code)} onclick={() => toggleDay(code)} aria-label={code}>{letter}</button>
+            {/each}
           </div>
+        {/if}
+        {#if editor.repeat.freq !== 'NONE' && editor.repeat.freq !== 'CUSTOM'}
+          <div class="two">
+            <label class="stack">Every
+              <span class="with-unit"><input class="field" type="number" min="1" max="99" bind:value={editor.repeat.interval} /><span>{unit(editor.repeat.freq, editor.repeat.interval)}</span></span>
+            </label>
+            <label class="stack">Until
+              <select class="field" bind:value={editor.repeat.ends}>
+                <option value="never">Forever</option>
+                <option value="until">A date</option>
+                <option value="count">A number of times</option>
+              </select>
+            </label>
+          </div>
+          {#if editor.repeat.ends === 'until'}
+            <input class="field" type="date" bind:value={editor.repeat.until} min={editor.date} aria-label="Last date" />
+          {:else if editor.repeat.ends === 'count'}
+            <span class="with-unit"><input class="field" type="number" min="1" max="999" bind:value={editor.repeat.count} aria-label="Times" /><span>times</span></span>
+          {/if}
         {/if}
         <label class="stack">Calendar
           <select class="field" bind:value={editor.calendar}>
@@ -419,12 +675,14 @@
       </div>
       </fieldset>
       {#if editor.readonly}
-        <p class="caption view-only"><Icon name="people" size={15} /> {sharedNote(cals.find((c) => c.id === editor.calendar) ?? {})}</p>
+        {@const c = cals.find((c) => c.id === editor.calendar) ?? {}}
+        {#if c.subscribed}<p class="caption view-only"><Icon name="link" size={15} /> From a calendar link; it changes only there.</p>
+        {:else}<p class="caption view-only"><Icon name="people" size={15} /> {sharedNote(c)}</p>{/if}
         <button type="button" class="btn lg wide" onclick={() => (editor = null)}>Close</button>
       {:else}
       <div class="actions">
         {#if editor.id}
-          <button type="button" class="btn lg danger" onclick={deleteEvent}>Delete</button>
+          <button type="button" class="btn lg danger" onclick={() => deleteEvent()}>Delete</button>
         {:else}
           <button type="button" class="btn lg" onclick={() => (editor = null)}>Cancel</button>
         {/if}
@@ -435,6 +693,20 @@
   </div>
 {/if}
 
+{#if scopeAsk && editor}
+  <div class="scrim top" onclick={(e) => e.target === e.currentTarget && (scopeAsk = null)} role="presentation">
+    <div class="sheet">
+      <h2 class="title">{scopeAsk === 'save' ? 'Change' : 'Delete'} a repeating event</h2>
+      <p class="secondary">{scopeAsk === 'save' ? 'Change' : 'Delete'} only this one, on {parse(editor.occurrence).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}, or every time it repeats?</p>
+      <div class="actions">
+        <button type="button" class="btn lg" class:danger={scopeAsk === 'delete'} onclick={() => (scopeAsk === 'save' ? saveEvent('this') : deleteEvent('this'))}>Only this one</button>
+        <button type="button" class="btn lg" class:primary={scopeAsk === 'save'} class:danger={scopeAsk === 'delete'} onclick={() => (scopeAsk === 'save' ? saveEvent('all') : deleteEvent('all'))}>All of them</button>
+      </div>
+      <button type="button" class="btn ghost wide back" onclick={() => (scopeAsk = null)}>Cancel</button>
+    </div>
+  </div>
+{/if}
+
 {#if calSheet?.from}
   <div class="scrim" onclick={(e) => e.target === e.currentTarget && (calSheet = null)} role="presentation">
     <div class="sheet">
@@ -442,6 +714,8 @@
       <p class="secondary">
         {calSheet.from.name} shares this calendar with you. {calSheet.canWrite ? 'You can both change it.' : 'You can view it, but not change it.'}
       </p>
+      <button type="button" class="btn share-row" onclick={() => exportCal(calSheet)}><Icon name="share" size={18} /><span>Save as .ics file</span></button>
+      {#if note}<p class="caption private">{note}</p>{/if}
       <div class="actions">
         <button type="button" class="btn lg danger" onclick={deleteCal}>Leave calendar</button>
         <button type="button" class="btn lg primary" onclick={() => (calSheet = null)}>Done</button>
@@ -458,6 +732,16 @@
           <button type="button" class="swatch" class:on={calSheet.color === c} style="background:var(--c-{c})" onclick={() => (calSheet.color = c)} aria-label={c}></button>
         {/each}
       </div>
+      {#if calSheet.subscribed}
+        <p class="caption private">Follows a calendar link{subs.find((x) => x.id === calSheet.id) ? `, updated ${ago(subs.find((x) => x.id === calSheet.id).refreshed)}` : ''}. Its events change only at the link.</p>
+        {#if subs.some((x) => x.id === calSheet.id)}
+          <button type="button" class="btn share-row" onclick={() => refreshNow(calSheet.id)}><Icon name="download" size={18} /><span>Update now</span></button>
+        {/if}
+      {/if}
+      {#if calSheet.id}
+        <button type="button" class="btn share-row" onclick={() => exportCal(calSheet)}><Icon name="share" size={18} /><span>Save as .ics file</span></button>
+      {/if}
+      {#if note}<p class="caption private">{note}</p>{/if}
       {#if calSheet.main}
         <p class="caption private">Your first calendar stays private. To share events with someone, add a calendar and share that.</p>
       {:else if calSheet.id}
@@ -478,7 +762,67 @@
   </div>
 {/if}
 
+{#if importSheet}
+  <div class="scrim" onclick={(e) => e.target === e.currentTarget && !importSheet.busy && (importSheet = null)} role="presentation">
+    <div class="sheet">
+      <h2 class="title">Import</h2>
+      {#if importSheet.result}
+        {@const r = importSheet.result}
+        <p class="secondary">Imported {r.events} {r.events === 1 ? 'event' : 'events'}.</p>
+        {#if r.error}<p class="caption error">{r.error} Importing the file again picks up where it stopped.</p>{/if}
+        {#if r.unreadable}<p class="caption">{r.unreadable} {r.unreadable === 1 ? 'event repeats' : 'events repeat'} in a way this calendar can't show yet; they appear only the first time.</p>{/if}
+        {#if r.zones.length}<p class="caption">Times in {r.zones.join(', ')} were read in the calendar's own time zone.</p>{/if}
+        <p class="caption">Importing the same file again updates these events instead of adding them twice.</p>
+        <button type="button" class="btn lg primary wide back" onclick={() => (importSheet = null)}>Done</button>
+      {:else}
+        {#each importSheet.items as item}
+          <div class="import-row">
+            <div class="import-name"><b>{item.name}</b>
+              {#if item.error}<span class="caption">{item.error}</span>
+              {:else}<span class="caption">{item.r.events.filter((e) => !e.recurrence_of).length} events{item.r.events.some((e) => e.rrule) ? `, ${item.r.events.filter((e) => e.rrule).length} repeating` : ''}</span>{/if}
+            </div>
+            {#if item.r?.events.length}
+              <select class="field" bind:value={item.target} disabled={importSheet.busy} aria-label="Import into">
+                <option value="new">New calendar “{item.name}”</option>
+                {#each cals.filter((c) => canEdit(c.id)) as c}<option value={c.id}>Into {c.name}</option>{/each}
+              </select>
+            {/if}
+          </div>
+        {/each}
+        {#if importSheet.busy}
+          <progress class="wide" max={importSheet.total} value={importSheet.done}></progress>
+          <p class="caption">{importSheet.done} of {importSheet.total}…</p>
+        {/if}
+        <div class="actions">
+          <button type="button" class="btn lg" disabled={importSheet.busy} onclick={() => (importSheet = null)}>Cancel</button>
+          <button type="button" class="btn lg primary" disabled={importSheet.busy || !importSheet.total} onclick={runImport}>Import</button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+{#if subSheet}
+  <div class="scrim" onclick={(e) => e.target === e.currentTarget && !subSheet.busy && (subSheet = null)} role="presentation">
+    <form class="sheet" onsubmit={(e) => (e.preventDefault(), subscribe())}>
+      <h2 class="title">Subscribe to a calendar</h2>
+      <p class="secondary">Paste a calendar link (webcal:// or one ending in .ics), such as Google Calendar's “Secret address in iCal format”, a holiday or a team schedule. It stays up to date and can't be changed here.</p>
+      <input class="field cal-name" placeholder="webcal://… or https://….ics" bind:value={subSheet.url} autofocus inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" />
+      <input class="field cal-name" placeholder="Name (optional)" bind:value={subSheet.name} />
+      {#if subSheet.error}<p class="caption error">{subSheet.error}</p>{/if}
+      <div class="actions">
+        <button type="button" class="btn lg" disabled={subSheet.busy} onclick={() => (subSheet = null)}>Cancel</button>
+        <button class="btn lg primary" disabled={subSheet.busy || !subSheet.url.trim()}>{subSheet.busy ? 'Reading…' : 'Subscribe'}</button>
+      </div>
+    </form>
+  </div>
+{/if}
+
 <style>
+  .import-row { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .import-name { display: flex; flex-direction: column; gap: 2px; }
+  progress { margin-top: 16px; accent-color: var(--accent); }
+  .error { color: var(--c-red); margin: 10px 0 0; }
   .shared-mark { color: var(--text-3); display: grid; }
   .share-row { width: 100%; height: 46px; justify-content: flex-start; gap: 10px; margin-top: 18px; color: var(--accent); }
   .share-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -486,15 +830,31 @@
   .view-only { display: flex; align-items: center; gap: 6px; margin: 16px 0; }
   .wide { width: 100%; }
   fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+  .scrim.top { z-index: 120; }
+  .back { margin-top: 8px; }
+  .sr { visibility: hidden; }
+  .two.one { grid-template-columns: 1fr; }
+  .weekdays { display: flex; justify-content: space-between; gap: 6px; }
+  .wday { width: 38px; height: 38px; border-radius: 50%; border: 0; background: var(--surface-2); color: var(--text-2); font-weight: 650; cursor: pointer; transition: background 0.15s; }
+  .wday:hover { background: var(--active); }
+  .wday.on { background: var(--accent); color: #fff; }
+  .with-unit { display: flex; align-items: center; gap: 10px; }
+  .with-unit input { width: 90px; flex: none; }
+  .with-unit span { color: var(--text-2); }
+  .pill { display: flex; align-items: center; gap: 4px; min-height: 21px; }
+  .rep { width: 11px; height: 11px; flex: none; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  .pill.cont { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -3px; }
+  .pill.on { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: -3px; }
   .app { display: flex; height: 100vh; }
   .sidebar { width: 240px; flex: none; padding: 28px 16px; border-right: 1px solid var(--line); background: var(--bg-elevated); }
   .cal-row { display: flex; align-items: center; gap: 12px; padding: 7px 8px; border-radius: 10px; color: var(--text-3); }
   .cal-row:hover { background: var(--hover); }
-  .cal-row .name { flex: 1; color: var(--text); font-weight: 500; }
+  .cal-row .name { flex: 1; min-width: 0; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cal-row .name.wraps { white-space: normal; }
   .icon-btn.sm { width: 28px; height: 28px; opacity: 0; }
   .cal-row:hover .icon-btn.sm { opacity: 1; }
   .add { margin-top: 6px; padding: 0 10px; }
-  .other { margin-top: 28px; }
+  .other-apps { margin-top: 28px; }
   .sidebar .caption { padding: 0 8px; margin: 4px 0 0; }
 
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 26px 28px 0; }

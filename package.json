@@ -5,10 +5,14 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "for tz in Europe/Prague America/New_York Asia/Tokyo UTC; do TZ=$tz node --test app/lib/calendar.test.js || exit 1; done"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/plugin-dialog": "2.8.4",
+    "@tauri-apps/plugin-fs": "2.7.1",
+    "@tauri-apps/plugin-http": "2.8.3",
     "@tauri-apps/plugin-opener": "2.7.2"
   },
   "devDependencies": {

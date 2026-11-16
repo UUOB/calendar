@@ -7,6 +7,10 @@ pub fn run() {
     tauri_plugin_uuob_update::add(tauri::Builder::default())
         // Phones: bring UUOB to the front when the user needs to tap Allow there.
         .plugin(tauri_plugin_opener::init())
+        // Calendar links (https only, see capabilities) and saving .ics files.
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         // Where UUOB is: on this device, or on another one the user linked.
         .plugin(tauri_plugin_uuob_sdk::init())
         .run(tauri::generate_context!())
