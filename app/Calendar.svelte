@@ -1,6 +1,8 @@
 <script>
   import { onMount, tick } from 'svelte';
   import Icon from '../uuob/ui/Icon.svelte';
+  import Settings, { settings } from '../uuob/ui/Settings.svelte';
+  import TimeField from '../uuob/ui/TimeField.svelte';
   import { uuob } from '../uuob/ui/uuob.js';
   import { today, iso, parse, addDays, pad, friendlyTime } from '../uuob/ui/dates.js';
   import { expand, byDay } from './lib/instances.js';
@@ -50,6 +52,7 @@
   let peopleOpen = $state(false);
   let joiningOpen = $state(false);
   let addMenu = $state(false); // the sidebar's + : new calendar, import, subscribe
+  let settingsOpen = $state(false);
   let answers = $state(new Map()); // event id -> 'yes' | 'maybe' | 'no'
   let editor = $state(null); // event being edited / created (see lib/series.js)
   let scopeAsk = $state(null); // 'save' | 'delete': only this occurrence, or all?
@@ -87,7 +90,8 @@
     if (cursor === shownToday) cursor = t; // keep following "today" if we were on it
     shownToday = t;
   });
-  const weekStart = (d) => addDays(d, -((parse(d).getDay() + 6) % 7)); // Monday
+  // Monday, or Sunday if the user chose so in Settings.
+  const weekStart = (d) => addDays(d, -((parse(d).getDay() + (settings.sunday_first ? 0 : 6)) % 7));
   const days = $derived(narrow ? [cursor] : Array.from({ length: 7 }, (_, i) => addDays(weekStart(cursor), i)));
   const monthDays = $derived.by(() => {
     const first = iso(new Date(parse(cursor).getFullYear(), parse(cursor).getMonth(), 1));
@@ -413,6 +417,10 @@
 
   /** Remembers your address when a file or link is your own calendar
    *  (Google's are named by their owner's), so the card knows which guest is you. */
+  async function forgetAddress(a) {
+    addresses = addresses.filter((x) => x !== a);
+    await prefsC.put({ emails: addresses }, 'me');
+  }
   async function noteAddress(owner) {
     if (!owner || addresses.includes(owner)) return;
     addresses = [...addresses, owner];
@@ -595,6 +603,8 @@
       {#if !showTasks}<Icon name="lock" size={14} />{/if}
     </div>
     {#if !showTasks}<p class="caption">Asks to read your Tasks data.</p>{/if}
+
+    <button class="btn ghost settings-btn" onclick={() => ((calsOpen = false), (settingsOpen = true))}><Icon name="settings" size={19} /> Settings</button>
   </aside>
 
   <section class="main">
@@ -709,11 +719,11 @@
         <label class="toggle"><input type="checkbox" bind:checked={editor.all_day} /> <span>All-day</span></label>
         <div class="two" class:one={editor.all_day}>
           <label class="stack">Starts<input class="field" type="date" value={editor.date} onchange={(e) => moveStart(e.currentTarget.value)} required /></label>
-          {#if !editor.all_day}<label class="stack"><span class="sr">Start time</span><input class="field" type="time" bind:value={editor.start} required /></label>{/if}
+          {#if !editor.all_day}<label class="stack"><span class="sr">Start time</span><TimeField bind:value={editor.start} aria-label="Start time" /></label>{/if}
         </div>
         <div class="two" class:one={editor.all_day}>
           <label class="stack">Ends<input class="field" type="date" bind:value={editor.end_date} min={editor.date} required /></label>
-          {#if !editor.all_day}<label class="stack"><span class="sr">End time</span><input class="field" type="time" bind:value={editor.end} required /></label>{/if}
+          {#if !editor.all_day}<label class="stack"><span class="sr">End time</span><TimeField bind:value={editor.end} aria-label="End time" /></label>{/if}
         </div>
         <label class="stack">Repeat
           <select class="field" bind:value={editor.repeat.freq}>
@@ -770,6 +780,21 @@
     </form>
   </div>
 {/if}
+
+<Settings bind:open={settingsOpen} name="Calendar" week>
+  <div class="group-label">Invitations</div>
+  <div class="group">
+    {#each addresses as a (a)}
+      <div class="srow addr">
+        <span class="label">{a}</span>
+        <button class="icon-btn" onclick={() => forgetAddress(a)} aria-label="Remove {a}" title="Remove"><Icon name="close" size={17} /></button>
+      </div>
+    {:else}
+      <div class="srow"><span class="value">No address yet</span></div>
+    {/each}
+  </div>
+  <p class="foot">Your addresses tell which guest is you. They're learned when you import or subscribe to your own Google calendar.</p>
+</Settings>
 
 {#if viewing}
   {@const e = viewing}
@@ -1063,7 +1088,12 @@
   .pill.cont { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -3px; }
   .pill.on { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: -3px; }
   .app { display: flex; height: 100vh; }
-  .sidebar { width: 240px; flex: none; padding: 28px 16px; border-right: 1px solid var(--line); background: var(--bg-elevated); }
+  .sidebar { width: 240px; flex: none; padding: 28px 16px 18px; border-right: 1px solid var(--line); background: var(--bg-elevated); display: flex; flex-direction: column; overflow-y: auto; }
+  .settings-btn { margin-top: auto; align-self: flex-start; padding: 0 10px; color: var(--text-2); }
+  .settings-btn:hover { color: var(--text); background: var(--hover); }
+  .cals-open .settings-btn { margin-top: 20px; }
+  .addr { display: flex; align-items: center; gap: 8px; }
+  .addr .label { flex: 1; font-size: 15px !important; }
   .cal-row { display: flex; align-items: center; gap: 12px; padding: 7px 8px; border-radius: 10px; color: var(--text-3); }
   .cal-row:hover { background: var(--hover); }
   .cal-row .name { flex: 1; min-width: 0; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

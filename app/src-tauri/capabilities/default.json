@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Open UUOB (uuob://) so the user can allow the connection, open an event's links (meetings, web pages, email addresses, phone numbers) when the user taps them, find UUOB (here or on another device), update the app itself, fetch calendar links the user subscribes to (https only), and save a calendar as an .ics file where the user picks.",
+  "description": "Open UUOB (uuob://) so the user can allow the connection, open an event's links (meetings, web pages, email addresses, phone numbers) when the user taps them, find UUOB (here or on another device), update the app itself, fetch calendar links the user subscribes to (https only), save a calendar as an .ics file where the user picks, and read its own version to show it in Settings.",
   "windows": [
     "main"
   ],
@@ -40,6 +40,7 @@
       ]
     },
     "dialog:allow-save",
-    "fs:allow-write-text-file"
+    "fs:allow-write-text-file",
+    "core:app:allow-version"
   ]
 }
