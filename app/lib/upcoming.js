@@ -14,17 +14,23 @@ import { localInstant, localWall, zonedWall } from './zones.js';
  *  the window on when it runs. */
 export const DAYS = 14;
 
-/** The alert choices, in minutes before the start (null: no alert). */
-export const BEFORE = [
-  [null, 'None'],
-  [0, 'At the start'],
-  [5, '5 minutes before'],
-  [10, '10 minutes before'],
-  [30, '30 minutes before'],
-  [60, '1 hour before'],
-  [1440, '1 day before'],
-];
+/** The alert choices offered first, in minutes before the start (null: no
+ *  alert). Any other number of minutes can be chosen too, up to MAX_BEFORE. */
+export const BEFORE = [null, 0, 5, 10, 30, 60, 1440];
 export const DEFAULT_BEFORE = 10;
+/** The earliest an alert can ring: a week before. An event joins the list
+ *  (and its alert is armed) when a copy of Calendar runs in the DAYS days
+ *  before it, so a week leaves a week for that. */
+export const MAX_BEFORE = 7 * 1440;
+
+/** "None", "At the start", "1 hour 30 minutes before", "2 days before". */
+export function beforeLabel(m) {
+  if (m == null) return 'None';
+  if (m <= 0) return 'At the start';
+  const n = (x, one) => `${x} ${one}${x === 1 ? '' : 's'}`;
+  const [d, h, min] = [Math.floor(m / 1440), Math.floor((m % 1440) / 60), m % 60];
+  return [d && n(d, 'day'), h && n(h, 'hour'), min && n(min, 'minute')].filter(Boolean).join(' ') + ' before';
+}
 
 /** A place to show: not a link (a meeting's address isn't one). */
 const place = (e) => (e.location && !/^https?:\/\//i.test(e.location.trim()) ? e.location.trim() : '');

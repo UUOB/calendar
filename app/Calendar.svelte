@@ -13,7 +13,8 @@
   import { calendarUrl, fetchText, saveText, openLink } from './lib/native.js';
   import { meeting, notesOf, linkify, peopleOf, peopleSummary, answerOf, asksAnswer } from './lib/details.js';
   import { describe } from './lib/recur.js';
-  import { upcomingFor, BEFORE, DEFAULT_BEFORE } from './lib/upcoming.js';
+  import { upcomingFor, DEFAULT_BEFORE, beforeLabel } from './lib/upcoming.js';
+  import AlertPick from './AlertPick.svelte';
 
   // Every calendar is a container of its own, so it can be shared with other
   // people. The first calendar lives in the app's first container, which
@@ -31,6 +32,13 @@
   const alertsC = uuob.collection('alerts'); // your own alert for an event, like your answers
   const COLORS = ['blue', 'red', 'orange', 'yellow', 'green', 'teal', 'purple', 'pink'];
   const HOUR = 52; // px per hour
+  // The views, shortest first: so many days side by side, or the month.
+  const VIEWS = [['1d', 'Day', 1], ['2d', '2 days', 2], ['4d', '4 days', 4], ['1w', 'Week', 7], ['month', 'Month', 31]];
+  const viewLabel = (v) => VIEWS.find(([x]) => x === v)?.[1] ?? v;
+  const viewOrder = (v) => VIEWS.findIndex(([x]) => x === v);
+  // Which views the switch on top offers (Settings): two, or three. Phones and
+  // computers each keep their own; these start as before, Day or Week, and Month.
+  const SWITCH = { narrow: { three: false, small: '1d', mid: '2d', big: 'month' }, wide: { three: false, small: '1w', mid: '4d', big: 'month' } };
 
   let all = $state([]); // events from every container
   let containers = $state([]);
@@ -47,7 +55,9 @@
     return c?.canWrite !== false && !c?.subscribed;
   };
   let hidden = $state(new Set());
-  let mode = $state('week'); // 'week' | 'month'
+  let switchPrefs = $state(structuredClone(SWITCH));
+  let view = $state('1w'); // one of VIEWS
+  const mode = $derived(view === 'month' ? 'month' : 'week'); // the month, or days side by side
   let cursor = $state(today());
   let narrow = $state(false);
   let viewing = $state(null); // the event whose card is open
@@ -99,7 +109,14 @@
   });
   // Monday, or Sunday if the user chose so in Settings.
   const weekStart = (d) => addDays(d, -((parse(d).getDay() + (settings.sunday_first ? 0 : 6)) % 7));
-  const days = $derived(narrow ? [cursor] : Array.from({ length: 7 }, (_, i) => addDays(weekStart(cursor), i)));
+  // The switch's views, shortest first (Settings may name them in any order, or one twice).
+  const switchOf = (p) => [...new Set(p.three ? [p.small, p.mid, p.big] : [p.small, p.big])].sort((a, b) => viewOrder(a) - viewOrder(b));
+  const segments = $derived(switchOf(switchPrefs[narrow ? 'narrow' : 'wide']));
+  // The view to open a day in (from the month): the switch's shortest one.
+  const dayView = $derived(segments.find((v) => v !== 'month') ?? '1d');
+  const dayCount = $derived(VIEWS.find(([x]) => x === view)?.[2] ?? 7);
+  // A week starts on its first day; other views start on the day you are on.
+  const days = $derived(view === '1w' ? Array.from({ length: 7 }, (_, i) => addDays(weekStart(cursor), i)) : Array.from({ length: dayCount }, (_, i) => addDays(cursor, i)));
   const monthDays = $derived.by(() => {
     const first = iso(new Date(parse(cursor).getFullYear(), parse(cursor).getMonth(), 1));
     const start = weekStart(first);
@@ -150,7 +167,7 @@
   const hhmm = (m) => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
 
   const title = $derived.by(() => {
-    const d = parse(mode === 'week' && !narrow ? days[3] : cursor);
+    const d = parse(mode === 'week' ? days[Math.floor(days.length / 2)] : cursor);
     return { month: d.toLocaleDateString(undefined, { month: 'long' }), year: d.getFullYear() };
   });
 
@@ -184,7 +201,7 @@
     if (mode === 'month') {
       const d = parse(cursor);
       cursor = iso(new Date(d.getFullYear(), d.getMonth() + dir, 1));
-    } else cursor = addDays(cursor, dir * (narrow ? 1 : 7));
+    } else cursor = addDays(cursor, dir * days.length);
   }
 
   function newEvent(date, start = '09:00', end = null) {
@@ -432,7 +449,7 @@
 
   /** Remembers your address when a file or link is your own calendar
    *  (Google's are named by their owner's), so the card knows which guest is you. */
-  // What is coming up, for UUOB's widget and alerts on your devices, written
+  // What is coming up, for the Up next widget and alerts on your devices, written
   // again whenever events, answers or the setting change (and every hour, as
   // the window moves on).
   $effect(() => {
@@ -464,7 +481,7 @@
     }
     ownAlerts = m;
   }
-  const defaultAlert = (m) => (m == null ? 'none' : (BEFORE.find(([x]) => x === m)?.[1] ?? `${m} minutes before`).toLowerCase());
+  const defaultAlert = (m) => beforeLabel(m).toLowerCase();
 
   function setAlertBefore(v) {
     alertBefore = v === 'none' ? null : Number(v);
@@ -561,6 +578,23 @@
     if (prefsLoaded) prefsC.put({ show_tasks: showTasks, hidden: [...hidden] }, 'calendar');
   }
 
+  // The switch on top: set in Settings, kept in a record of its own (synced).
+  // A view no longer on the switch gives way to its first one.
+  let switchLoaded = false;
+  function setSwitch(change) {
+    const key = narrow ? 'narrow' : 'wide';
+    switchPrefs = { ...switchPrefs, [key]: { ...switchPrefs[key], ...change } };
+    if (switchLoaded) prefsC.put($state.snapshot(switchPrefs), 'views').catch(() => {});
+    keepView();
+  }
+  function keepView() {
+    if (!segments.includes(view)) view = segments[0];
+  }
+  function show(v) {
+    view = v;
+    if (v !== 'month') scrollToMorning();
+  }
+
   // Showing tasks needs read access to the Tasks app's container.
   let stopTasks = null;
   async function toggleTasks(save = true) {
@@ -587,7 +621,8 @@
   onMount(() => {
     const mq = matchMedia('(max-width: 720px)');
     narrow = mq.matches;
-    mq.onchange = () => (narrow = mq.matches);
+    view = segments[0];
+    mq.onchange = () => ((narrow = mq.matches), keepView());
     const a = firstCal.subscribe((r) => {
       const p = r.find((c) => c.id === 'personal');
       if (p) first = { name: p.name, color: p.color };
@@ -610,6 +645,11 @@
       const a = r.find((x) => x.id === 'alerts');
       alertBefore = a ? (a.before ?? null) : DEFAULT_BEFORE;
       alertsKnown = true;
+      // The switch on top, also when another device changes it.
+      const v = r.find((x) => x.id === 'views');
+      if (v) switchPrefs = { narrow: { ...SWITCH.narrow, ...v.narrow }, wide: { ...SWITCH.wide, ...v.wide } };
+      switchLoaded = true;
+      keepView();
     });
     moveOldCalendars().catch(() => {});
     prefsC.get('calendar').then((p) => {
@@ -673,9 +713,8 @@
       <h1 class="large-title"><b>{title.month}</b> <span class="year">{title.year}</span></h1>
       <span class="spacer"></span>
       <button class="icon-btn only-narrow" onclick={() => (calsOpen = true)} aria-label="Calendars"><Icon name="menu" /></button>
-      <div class="segmented">
-        <button class:on={mode === 'week'} onclick={() => ((mode = 'week'), scrollToMorning())}>{narrow ? 'Day' : 'Week'}</button>
-        <button class:on={mode === 'month'} onclick={() => (mode = 'month')}>Month</button>
+      <div class="segmented views" role="group" aria-label="View">
+        {#each segments as v (v)}<button class:on={view === v} aria-pressed={view === v} onclick={() => show(v)}>{viewLabel(v)}</button>{/each}
       </div>
       <div class="nav">
         <button class="icon-btn" onclick={() => move(-1)} aria-label="Previous"><Icon name="left" /></button>
@@ -690,7 +729,7 @@
         <div class="heads">
           <div class="gutter"></div>
           {#each days as d}
-            <button class="head" class:today={d === t} onclick={() => ((cursor = d), narrow || (mode = 'week'))}>
+            <button class="head" class:today={d === t} onclick={() => days.length > 1 && dayView !== view && ((cursor = d), show(dayView))}>
               <span class="wd">{parse(d).toLocaleDateString(undefined, { weekday: 'short' })}</span>
               <span class="dn">{parse(d).getDate()}</span>
             </button>
@@ -755,7 +794,7 @@
         {#each monthDays as d}
           {@const list = [...onDay(d).allDay, ...[...onDay(d).timed].sort((a, b) => mins(a.start) - mins(b.start))]}
           <div class="cell" class:other={parse(d).getMonth() !== parse(cursor).getMonth()} onclick={() => newEvent(d)} role="presentation">
-            <button class="num" class:today={d === t} onclick={(ev) => (ev.stopPropagation(), (cursor = d), (mode = 'week'), scrollToMorning())}>{parse(d).getDate()}</button>
+            <button class="num" class:today={d === t} onclick={(ev) => (ev.stopPropagation(), (cursor = d), show(dayView))}>{parse(d).getDate()}</button>
             {#each list.slice(0, 3) as e (e.key)}
               {@const a = answerFor(e)}
               <button class="mev {a ?? ''}" class:solid={e.row} style="--c:{colorOf(e)}" onclick={(ev) => (ev.stopPropagation(), open(e))}>
@@ -823,9 +862,9 @@
           {/if}
         {/if}
         {#if !editor.all_day}
-          <label class="stack">Alert
-            <select class="field" bind:value={editor.alert}>{@render alertOptions(editor.alert)}</select>
-          </label>
+          <div class="stack">Alert
+            <AlertPick value={editor.alert} onchange={(v) => (editor.alert = v)} defaultLabel={defaultAlert(alertBefore)} />
+          </div>
         {/if}
         <label class="stack">Calendar
           <select class="field" bind:value={editor.calendar}>
@@ -847,23 +886,37 @@
   </div>
 {/if}
 
-{#snippet alertOptions(current)}
-  <option value="default">Default ({defaultAlert(alertBefore)})</option>
-  {#each BEFORE as [m, label]}<option value={m === null ? 'none' : String(m)}>{m === null ? 'No alert' : label}</option>{/each}
-  {#if !['default', 'none', ...BEFORE.map(([m]) => String(m))].includes(current)}<option value={current}>{current} minutes before</option>{/if}
-{/snippet}
-
 <Settings bind:open={settingsOpen} name="Calendar" week>
-  <div class="group-label">Alerts</div>
+  {@const sw = switchPrefs[narrow ? 'narrow' : 'wide']}
+  <div class="group-label">Views</div>
   <div class="group">
     <div class="srow">
+      <span class="label">Third view</span>
+      <div class="segmented" role="group" aria-label="Third view">
+        <button class:on={!sw.three} aria-pressed={!sw.three} onclick={() => setSwitch({ three: false })}>Off</button>
+        <button class:on={sw.three} aria-pressed={sw.three} onclick={() => setSwitch({ three: true })}>On</button>
+      </div>
+    </div>
+    {#each sw.three ? [['small', 'Smallest'], ['mid', 'Middle'], ['big', 'Biggest']] : [['small', 'Small'], ['big', 'Big']] as [k, name] (k)}
+      <div class="srow">
+        <span class="label">{name}</span>
+        <select class="field view-pick" aria-label="{name} view" value={sw[k]} onchange={(e) => setSwitch({ [k]: e.currentTarget.value })}>
+          <!-- A view another slot shows can't be chosen twice. -->
+          {#each VIEWS as [v, label]}<option value={v} disabled={v !== sw[k] && (sw.three ? ['small', 'mid', 'big'] : ['small', 'big']).some((o) => o !== k && sw[o] === v)}>{label}</option>{/each}
+        </select>
+      </div>
+    {/each}
+  </div>
+  <p class="foot">What the switch on top offers. Phones and computers each keep their own.</p>
+
+  <div class="group-label">Alerts</div>
+  <div class="group">
+    <div class="srow alert-row">
       <span class="label">Default alert</span>
-      <select class="field alert-pick" aria-label="Default alert before events" value={alertBefore ?? 'none'} onchange={(e) => setAlertBefore(e.currentTarget.value)}>
-        {#each BEFORE as [m, label]}<option value={m ?? 'none'}>{label}</option>{/each}
-      </select>
+      <span class="alert-pick"><AlertPick class="field" label="Default alert before events" value={alertBefore == null ? 'none' : String(alertBefore)} onchange={setAlertBefore} /></span>
     </div>
   </div>
-  <p class="foot">For events with a time; each event can have its own. UUOB rings them on your phones and computers.</p>
+  <p class="foot">For events with a time; each event can have its own, any time before it up to a week. They ring on your phones and computers, as Calendar notifications.</p>
 
   <div class="group-label">Invitations</div>
   <div class="group">
@@ -911,10 +964,10 @@
         <button class="row link" onclick={() => visit(e.url)}><Icon name="link" size={18} /><span class="wraps">{e.url.replace(/^https?:\/\/(www\.)?/, '')}</span></button>
       {/if}
       {#if !e.all_day}
-        <label class="row">
+        <div class="row alert-line">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0" /></svg>
-          <select class="row-pick" aria-label="Alert" value={alertChoice(e)} onchange={(ev) => setOwnAlert(answerKey(e), ev.currentTarget.value)}>{@render alertOptions(alertChoice(e))}</select>
-        </label>
+          <span class="alert-box"><AlertPick class="row-pick" value={alertChoice(e)} onchange={(v) => setOwnAlert(answerKey(e), v)} defaultLabel={defaultAlert(alertBefore)} /></span>
+        </div>
       {/if}
       {#if people.length}
         <button class="row" onclick={() => (peopleOpen = !peopleOpen)} aria-expanded={peopleOpen}>
@@ -1144,7 +1197,8 @@
   .card > .row:last-child { border-bottom: 0; }
   .row > :global(svg), .row > svg { color: var(--text-2); }
   .row.link { color: var(--accent); }
-  .row-pick { flex: 1; min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; cursor: pointer; }
+  /* The alert on the card: a plain line, the picker inside AlertPick. */
+  .alert-box :global(select.row-pick) { width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; cursor: pointer; }
   .row.small { min-height: 38px; font-size: 14px; color: var(--text-2); border: 0; }
   .wraps { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .chev { display: grid; color: var(--text-3); transition: transform 0.18s var(--ease); }
@@ -1182,7 +1236,16 @@
   .settings-btn { margin-top: auto; align-self: flex-start; padding: 0 10px; color: var(--text-2); }
   .settings-btn:hover { color: var(--text); background: var(--hover); }
   .cals-open .settings-btn { margin-top: 20px; }
-  .alert-pick { width: auto; max-width: 100%; }
+  .alert-pick { display: flex; flex-direction: column; align-items: flex-end; max-width: 100%; }
+  .alert-pick :global(select) { width: auto; max-width: 100%; }
+  .alert-pick :global(.custom) { justify-content: flex-end; }
+  .alert-row { flex-wrap: wrap; }
+  .alert-box { flex: 1; min-width: 0; }
+  .view-pick { width: auto; }
+  /* Three views and the arrows on one line on a phone. */
+  @media (max-width: 720px) { .views button { padding: 5px 10px; } }
+  /* Like label.stack (tokens.css): the alert picker can't be one label, it holds several fields. */
+  div.stack { display: grid; gap: 6px; font-size: 13px; color: var(--text-2); font-weight: 500; }
   .addr { display: flex; align-items: center; gap: 8px; }
   .addr .label { flex: 1; font-size: 15px !important; }
   .cal-row { display: flex; align-items: center; gap: 12px; padding: 7px 8px; border-radius: 10px; color: var(--text-3); }

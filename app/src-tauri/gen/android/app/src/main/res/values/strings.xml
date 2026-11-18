@@ -1,4 +1,6 @@
 <resources>
     <string name="app_name">"Calendar"</string>
     <string name="main_activity_title">"Calendar"</string>
+    <string name="up_next">Up next</string>
+    <string name="up_next_about">Today and tomorrow side by side: what is on now and coming up</string>
 </resources>

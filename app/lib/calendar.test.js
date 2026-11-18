@@ -382,3 +382,14 @@ test('coming up: the next two weeks, on the event\'s own clock, with alerts', as
   // No default alert: only the events with one of their own ring.
   assert.deepEqual(upcomingFor(events, null, { now, own }).filter((a) => a.alert != null).map((a) => a.title), ['Call']);
 });
+
+test('alert labels, for any number of minutes', async () => {
+  const { beforeLabel, MAX_BEFORE } = await import('./upcoming.js');
+  assert.equal(beforeLabel(null), 'None');
+  assert.equal(beforeLabel(0), 'At the start');
+  assert.equal(beforeLabel(1), '1 minute before');
+  assert.equal(beforeLabel(90), '1 hour 30 minutes before');
+  assert.equal(beforeLabel(1440), '1 day before');
+  assert.equal(beforeLabel(2 * 1440 + 125), '2 days 2 hours 5 minutes before');
+  assert.equal(MAX_BEFORE, 7 * 1440);
+});

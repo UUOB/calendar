@@ -27,10 +27,13 @@ into Calendar. [Full setup guide →](https://github.com/UUOB/uuob/blob/main/doc
 - **Save a calendar as an `.ics` file** to take it anywhere.
 - **Invitations**: see who's coming and mark your own answer (Going, Maybe or No).
 - **Join calls** with one tap when an event has a meeting link.
-- **Alerts**: one default for all events, or a different one per event, on your phone and computer.
+- **Alerts**: one default for all events, or a different one per event, at any time before it you choose,
+  on your phone and computer.
 - **Your tasks** from Tasks, next to your events, if you allow it.
 - **Share a calendar** with someone, so they can view it or edit it.
-- **Up next widget** on Android: today's timeline at a glance.
+- **Views**: a day, 2 days, 4 days, a week or the month. In Settings you choose which two or three the
+  switch on top offers.
+- **Up next widget** on Android: today and tomorrow side by side, at a glance.
 
 ## For developers
 

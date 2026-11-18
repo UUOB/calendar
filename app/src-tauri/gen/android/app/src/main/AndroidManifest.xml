@@ -1,12 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- So this app can open UUOB (uuob://) for the user to allow the connection. -->
+    <!-- Alerts are this app's own notifications (Alert.kt). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- UUOB hands this app what is coming up in it, for the widget (Upcoming.kt),
+         and its alerts when due (Alert.kt). Only apps signed like UUOB hold this. -->
+    <permission
+        android:name="app.uuob.permission.UPCOMING"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="app.uuob.permission.UPCOMING" />
+    <!-- So this app can open UUOB (uuob://) for the user to allow the connection,
+         and ask it for the widget's list. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="uuob" />
         </intent>
+        <package android:name="app.uuob" />
     </queries>
 
     <!-- AndroidTV support -->
@@ -31,6 +41,39 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The "Up next" widget (UpNext.kt), and UUOB handing over its list (Upcoming.kt). -->
+        <receiver
+            android:name=".UpNext"
+            android:exported="false"
+            android:label="@string/up_next">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/up_next" />
+        </receiver>
+        <receiver
+            android:name=".UpcomingReceiver"
+            android:exported="true"
+            android:permission="app.uuob.permission.UPCOMING">
+            <intent-filter>
+                <action android:name="app.uuob.UPCOMING" />
+            </intent-filter>
+        </receiver>
+
+        <!-- UUOB handing over an alert when it is due, shown as this app's own notification (Alert.kt). -->
+        <receiver
+            android:name=".AlertReceiver"
+            android:exported="true"
+            android:permission="app.uuob.permission.UPCOMING">
+            <intent-filter>
+                <action android:name="app.uuob.SHOW_ALERT" />
+            </intent-filter>
+        </receiver>
 
         <provider
           android:name="androidx.core.content.FileProvider"
