@@ -354,3 +354,31 @@ test('the card: join link, notes without the joining block, people and your answ
   assert.equal(asksAnswer(e, new Set(['sam@example.test'])), false); // you organize it
   assert.equal(answerOf({ title: 'Lunch' }, mine, null), null);
 });
+
+test('coming up: the next two weeks, on the event\'s own clock, with alerts', async () => {
+  const { upcomingFor } = await import('./upcoming.js');
+  const { localInstant } = await import('./zones.js');
+  const now = localInstant('2026-03-02', '08:00');
+  const events = [
+    { id: 'standup', container: 'work', title: 'Standup', date: '2026-03-02', start: '09:30', end: '09:45', rrule: 'FREQ=WEEKLY', location: 'Room 2' },
+    { id: 'call', container: 'work', title: 'Call', date: '2026-03-02', start: '17:00', end: '18:00', tz: 'America/New_York', location: 'https://meet.example.test/x' },
+    { id: 'gone', container: 'work', title: 'Gone', date: '2026-03-02', start: '07:00', end: '07:30' }, // over
+    { id: 'now', container: 'work', title: 'Going on', date: '2026-03-02', start: '07:30', end: '08:30' },
+    { id: 'trip', container: 'work', title: 'Trip', date: '2026-03-04', end_date: '2026-03-05', all_day: true },
+    { id: 'no', container: 'work', title: 'Declined', date: '2026-03-03', start: '12:00', end: '13:00' },
+  ];
+  // The alerts you chose for single events: 30 minutes before the call, none for the one going on.
+  const own = (o) => ({ call: 30, now: null })[o.id];
+  const list = upcomingFor(events, 10, { now, skip: (o) => o.id === 'no', own, color: (o) => (o.id === 'trip' ? 'green' : undefined) });
+  // Today and the next two weeks' standups; nothing over or declined.
+  assert.deepEqual(list.filter((a) => a.title === 'Standup').map((a) => a.date), ['2026-03-02', '2026-03-09', '2026-03-16']);
+  assert.deepEqual(list.find((a) => a.title === 'Standup'), { id: 'work~standup~2026-03-02', title: 'Standup', body: 'Room 2', color: undefined, date: '2026-03-02', time: '09:30', end_date: '2026-03-02', end: '09:45', alert: 10 });
+  // In New York's time, wherever this runs: every device writes the same. A link isn't a place.
+  const call = list.find((a) => a.title === 'Call');
+  assert.deepEqual([call.date, call.time, call.end, call.tz, call.alert, call.body], ['2026-03-02', '17:00', '18:00', 'America/New_York', 30, undefined]);
+  assert.deepEqual(list.find((a) => a.title === 'Going on').alert, undefined);
+  assert.deepEqual(list.find((a) => a.title === 'Trip'), { id: 'work~trip~2026-03-04', title: 'Trip', body: undefined, color: 'green', date: '2026-03-04', end_date: '2026-03-05' });
+  assert.equal(list.length, 6);
+  // No default alert: only the events with one of their own ring.
+  assert.deepEqual(upcomingFor(events, null, { now, own }).filter((a) => a.alert != null).map((a) => a.title), ['Call']);
+});

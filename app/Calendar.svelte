@@ -13,6 +13,7 @@
   import { calendarUrl, fetchText, saveText, openLink } from './lib/native.js';
   import { meeting, notesOf, linkify, peopleOf, peopleSummary, answerOf, asksAnswer } from './lib/details.js';
   import { describe } from './lib/recur.js';
+  import { upcomingFor, BEFORE, DEFAULT_BEFORE } from './lib/upcoming.js';
 
   // Every calendar is a container of its own, so it can be shared with other
   // people. The first calendar lives in the app's first container, which
@@ -27,6 +28,7 @@
   // Your Going / Maybe / No to invitations, by event. Also in the private
   // first container: only you see it, and the organizer isn't told.
   const answersC = uuob.collection('answers');
+  const alertsC = uuob.collection('alerts'); // your own alert for an event, like your answers
   const COLORS = ['blue', 'red', 'orange', 'yellow', 'green', 'teal', 'purple', 'pink'];
   const HOUR = 52; // px per hour
 
@@ -53,7 +55,12 @@
   let joiningOpen = $state(false);
   let addMenu = $state(false); // the sidebar's + : new calendar, import, subscribe
   let settingsOpen = $state(false);
+  let alertBefore = $state(DEFAULT_BEFORE); // the default alert, minutes before an event (null: none)
+  let alertsKnown = $state(false);
+  let eventsKnown = $state(false); // every calendar has delivered its events
+  let hourTick = $state(0); // moves the coming-up window on
   let answers = $state(new Map()); // event id -> 'yes' | 'maybe' | 'no'
+  let ownAlerts = $state(new Map()); // event id -> minutes before | null (none)
   let editor = $state(null); // event being edited / created (see lib/series.js)
   let scopeAsk = $state(null); // 'save' | 'delete': only this occurrence, or all?
   let calSheet = $state(null);
@@ -181,10 +188,13 @@
   }
 
   function newEvent(date, start = '09:00', end = null) {
-    editor = editorFor({
-      date, start, end: end ?? hhmm(mins(start) + 60),
-      calendar: (cals.find((c) => canEdit(c.id) && !hidden.has(c.id)) ?? cals.find((c) => canEdit(c.id)))?.id ?? uuob.self,
-    });
+    editor = {
+      ...editorFor({
+        date, start, end: end ?? hhmm(mins(start) + 60),
+        calendar: (cals.find((c) => canEdit(c.id) && !hidden.has(c.id)) ?? cals.find((c) => canEdit(c.id)))?.id ?? uuob.self,
+      }),
+      alert: 'default', alertWas: 'default',
+    };
   }
 
   // Drag on the grid to create an event. A finger has to rest for a moment
@@ -234,11 +244,14 @@
 
   // Writes what lib/series.js worked out. Moving an event to another
   // calendar moves it to that calendar's container.
+  // Returns the id of the first event written (the one the sheet was about).
   async function apply(ops) {
+    let first = null;
     for (const o of ops) {
-      if (o.put) await eventsIn(o.put).put(o.value, o.id);
+      if (o.put) first ??= (await eventsIn(o.put).put(o.value, o.id))?.id ?? o.id;
       else await eventsIn(o.delete).delete(o.id);
     }
+    return first;
   }
   function saveEvent(scope) {
     if (editor.series && !scope) {
@@ -246,8 +259,9 @@
       scope = 'all';
     }
     const ops = planSave(editor, scope, events);
+    const { alert, alertWas } = editor;
     editor = scopeAsk = null;
-    apply(ops);
+    apply(ops).then((id) => id && alert !== alertWas && setOwnAlert(id, alert));
   }
   function deleteEvent(scope) {
     if (editor.series && !scope) return void (scopeAsk = 'delete');
@@ -266,7 +280,8 @@
   const visit = (url) => ((linkError = ''), openLink(url).catch(() => (linkError = "That link couldn't be opened.")));
   function edit(e) {
     viewing = null;
-    editor = editorFor(e, events);
+    const alert = alertChoice(e);
+    editor = { ...editorFor(e, events), alert, alertWas: alert };
   }
   // A new start date keeps the event's length in days.
   function moveStart(date) {
@@ -337,7 +352,7 @@
   let stopEvents = null;
   function watchEvents() {
     stopEvents?.();
-    stopEvents = uuob.all('events').subscribe((r) => (all = r));
+    stopEvents = uuob.all('events').subscribe((r, complete) => ((all = r), (eventsKnown ||= complete)));
   }
   async function quietly(work) {
     stopEvents?.();
@@ -417,6 +432,45 @@
 
   /** Remembers your address when a file or link is your own calendar
    *  (Google's are named by their owner's), so the card knows which guest is you. */
+  // What is coming up, for UUOB's widget and alerts on your devices, written
+  // again whenever events, answers or the setting change (and every hour, as
+  // the window moves on).
+  $effect(() => {
+    if (!alertsKnown || !eventsKnown) return;
+    void hourTick;
+    const list = upcomingFor(events, alertBefore, { skip: (o) => answerFor(o) === 'no', own: ownAlert, color: (o) => calOf(o)?.color ?? 'blue' });
+    const t = setTimeout(() => uuob.upcoming(list).catch(() => {}), 1500);
+    return () => clearTimeout(t);
+  });
+
+  // Your own alert for an event (kept like your answers, so it is yours alone
+  // and works for any calendar): for a whole repeating event, or one changed
+  // occurrence of it. undefined: the default; null: none.
+  function ownAlert(e) {
+    for (const k of [e.recurrence_of ? e.id : null, e.recurrence_of ?? e.series?.id ?? e.id]) if (k && ownAlerts.has(k)) return ownAlerts.get(k);
+  }
+  /** The choice as the pickers show it: 'default', 'none' or minutes. */
+  const alertChoice = (e) => {
+    const m = ownAlert(e);
+    return m === undefined ? 'default' : m === null ? 'none' : String(m);
+  };
+  function setOwnAlert(key, choice) {
+    const m = new Map(ownAlerts);
+    if (choice === 'default') (m.delete(key), alertsC.delete(key).catch(() => {}));
+    else {
+      const before = choice === 'none' ? null : Number(choice);
+      m.set(key, before);
+      alertsC.put({ before: before ?? false }, key).catch(() => {});
+    }
+    ownAlerts = m;
+  }
+  const defaultAlert = (m) => (m == null ? 'none' : (BEFORE.find(([x]) => x === m)?.[1] ?? `${m} minutes before`).toLowerCase());
+
+  function setAlertBefore(v) {
+    alertBefore = v === 'none' ? null : Number(v);
+    prefsC.put({ before: alertBefore }, 'alerts').catch(() => {});
+  }
+
   async function forgetAddress(a) {
     addresses = addresses.filter((x) => x !== a);
     await prefsC.put({ emails: addresses }, 'me');
@@ -550,7 +604,13 @@
       refreshDue();
     });
     const f = answersC.subscribe((r) => (answers = new Map(r.map((x) => [x.id, x.answer]))));
-    const g = prefsC.subscribe((r) => (addresses = r.find((x) => x.id === 'me')?.emails ?? []));
+    const h = alertsC.subscribe((r) => (ownAlerts = new Map(r.map((x) => [x.id, typeof x.before === 'number' ? x.before : null]))));
+    const g = prefsC.subscribe((r) => {
+      addresses = r.find((x) => x.id === 'me')?.emails ?? [];
+      const a = r.find((x) => x.id === 'alerts');
+      alertBefore = a ? (a.before ?? null) : DEFAULT_BEFORE;
+      alertsKnown = true;
+    });
     moveOldCalendars().catch(() => {});
     prefsC.get('calendar').then((p) => {
       if (p?.hidden) hidden = new Set(p.hidden);
@@ -559,12 +619,13 @@
     }, () => (prefsLoaded = true));
     const tickNow = () => (now = new Date());
     const timer = setInterval(tickNow, 30000);
+    const hourly = setInterval(() => hourTick++, 3600000);
     // Timers pause while the Mac sleeps or the window is hidden; catch up on return.
     const wake = () => document.visibilityState === 'visible' && tickNow();
     document.addEventListener('visibilitychange', wake);
     window.addEventListener('focus', tickNow);
     scrollToMorning();
-    return () => (a(), stopEvents?.(), c(), d(), e(), f(), g(), clearInterval(timer), document.removeEventListener('visibilitychange', wake), window.removeEventListener('focus', tickNow), stopTasks?.());
+    return () => (a(), stopEvents?.(), c(), d(), e(), f(), g(), h(), clearInterval(timer), clearInterval(hourly), document.removeEventListener('visibilitychange', wake), window.removeEventListener('focus', tickNow), stopTasks?.());
   });
 </script>
 
@@ -761,6 +822,11 @@
             <span class="with-unit"><input class="field" type="number" min="1" max="999" bind:value={editor.repeat.count} aria-label="Times" /><span>times</span></span>
           {/if}
         {/if}
+        {#if !editor.all_day}
+          <label class="stack">Alert
+            <select class="field" bind:value={editor.alert}>{@render alertOptions(editor.alert)}</select>
+          </label>
+        {/if}
         <label class="stack">Calendar
           <select class="field" bind:value={editor.calendar}>
             {#each cals.filter((c) => canEdit(c.id) || c.id === editor.calendar) as c}<option value={c.id}>{c.name}</option>{/each}
@@ -781,7 +847,24 @@
   </div>
 {/if}
 
+{#snippet alertOptions(current)}
+  <option value="default">Default ({defaultAlert(alertBefore)})</option>
+  {#each BEFORE as [m, label]}<option value={m === null ? 'none' : String(m)}>{m === null ? 'No alert' : label}</option>{/each}
+  {#if !['default', 'none', ...BEFORE.map(([m]) => String(m))].includes(current)}<option value={current}>{current} minutes before</option>{/if}
+{/snippet}
+
 <Settings bind:open={settingsOpen} name="Calendar" week>
+  <div class="group-label">Alerts</div>
+  <div class="group">
+    <div class="srow">
+      <span class="label">Default alert</span>
+      <select class="field alert-pick" aria-label="Default alert before events" value={alertBefore ?? 'none'} onchange={(e) => setAlertBefore(e.currentTarget.value)}>
+        {#each BEFORE as [m, label]}<option value={m ?? 'none'}>{label}</option>{/each}
+      </select>
+    </div>
+  </div>
+  <p class="foot">For events with a time; each event can have its own. UUOB rings them on your phones and computers.</p>
+
   <div class="group-label">Invitations</div>
   <div class="group">
     {#each addresses as a (a)}
@@ -826,6 +909,12 @@
       {/if}
       {#if e.url && e.url !== call?.url}
         <button class="row link" onclick={() => visit(e.url)}><Icon name="link" size={18} /><span class="wraps">{e.url.replace(/^https?:\/\/(www\.)?/, '')}</span></button>
+      {/if}
+      {#if !e.all_day}
+        <label class="row">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0" /></svg>
+          <select class="row-pick" aria-label="Alert" value={alertChoice(e)} onchange={(ev) => setOwnAlert(answerKey(e), ev.currentTarget.value)}>{@render alertOptions(alertChoice(e))}</select>
+        </label>
       {/if}
       {#if people.length}
         <button class="row" onclick={() => (peopleOpen = !peopleOpen)} aria-expanded={peopleOpen}>
@@ -1055,6 +1144,7 @@
   .card > .row:last-child { border-bottom: 0; }
   .row > :global(svg), .row > svg { color: var(--text-2); }
   .row.link { color: var(--accent); }
+  .row-pick { flex: 1; min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; cursor: pointer; }
   .row.small { min-height: 38px; font-size: 14px; color: var(--text-2); border: 0; }
   .wraps { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .chev { display: grid; color: var(--text-3); transition: transform 0.18s var(--ease); }
@@ -1092,6 +1182,7 @@
   .settings-btn { margin-top: auto; align-self: flex-start; padding: 0 10px; color: var(--text-2); }
   .settings-btn:hover { color: var(--text); background: var(--hover); }
   .cals-open .settings-btn { margin-top: 20px; }
+  .alert-pick { width: auto; max-width: 100%; }
   .addr { display: flex; align-items: center; gap: 8px; }
   .addr .label { flex: 1; font-size: 15px !important; }
   .cal-row { display: flex; align-items: center; gap: 12px; padding: 7px 8px; border-radius: 10px; color: var(--text-3); }
