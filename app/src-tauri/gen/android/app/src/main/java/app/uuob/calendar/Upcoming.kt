@@ -14,16 +14,15 @@ import java.util.TimeZone
  * UUOB keeps the list (the `upcoming` records Calendar writes, see
  * `uuob.upcoming` in the SDK) and hands it over whenever it changes, also when
  * it learns of a change made on another device while Calendar isn't running.
- * It comes only to Calendar, and only Calendar's own items: both apps are
- * signed alike and the broadcast needs `app.uuob.permission.UPCOMING`. It is
- * kept on disk, so the widget can draw without UUOB or the web UI running.
+ * It comes only to Calendar, and only Calendar's own items, once the user
+ * allowed Calendar in UUOB; anything without UUOB's proof is ignored (`fromUuob`). It
+ * is kept on disk, so the widget can draw without UUOB or the web UI running.
  */
 object Upcoming {
   /** UUOB to Calendar: here is your list (extra `list`: `{ hour12, items }`). */
   const val LIST = "app.uuob.UPCOMING"
   /** Calendar to UUOB: send me my list (when Calendar has none yet). */
   private const val ASK = "app.uuob.SEND_UPCOMING"
-  private const val PERMISSION = "app.uuob.permission.UPCOMING"
 
   class Item(
     val title: String, val body: String,
@@ -44,7 +43,7 @@ object Upcoming {
   fun askIfNone(ctx: Context) {
     if (prefs(ctx).contains("list")) return
     try {
-      ctx.sendBroadcast(Intent(ASK).setComponent(ComponentName("app.uuob", "app.uuob.AskReceiver")).addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES), PERMISSION)
+      ctx.sendBroadcast(Intent(ASK).setComponent(ComponentName("app.uuob", "app.uuob.AskReceiver")).addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES))
     } catch (e: Exception) {
       // UUOB isn't on this phone: nothing to show until it is.
     }
@@ -100,6 +99,6 @@ object Upcoming {
 /** UUOB handing over the list (see Upcoming). */
 class UpcomingReceiver : BroadcastReceiver() {
   override fun onReceive(ctx: Context, intent: Intent) {
-    if (intent.action == Upcoming.LIST) intent.getStringExtra("list")?.let { Upcoming.save(ctx, it) }
+    if (intent.action == Upcoming.LIST && fromUuob(intent)) intent.getStringExtra("list")?.let { Upcoming.save(ctx, it) }
   }
 }
