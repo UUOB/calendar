@@ -175,6 +175,9 @@ private class Timeline(val ctx: Context, wDp: Int, hDp: Int, val night: Boolean)
       if (kotlin.math.abs(ly - yNow) > dp(16f)) c.drawText(label, pad, ly + hourPaint.textSize / 3, hourPaint)
       c.drawLine(left, ly, right, ly, line)
     }
+    // A line between today and tomorrow, from the days' names down to the bottom.
+    val mid = left + colW + gap / 2
+    c.drawLine(mid, dp(6f), mid, band + shown * band, line)
 
     for (day in 0..1) {
       val x0 = left + day * (colW + gap)

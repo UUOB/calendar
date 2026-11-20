@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -38,6 +39,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -106,6 +108,7 @@ import app.uuob.calendar.core.saveDefaultAlert
 import app.uuob.calendar.core.saveEmails
 import app.uuob.calendar.core.saveEvent
 import app.uuob.calendar.core.saveSwitch
+import app.uuob.calendar.core.switchWithList
 import app.uuob.calendar.core.saveViewPrefs
 import app.uuob.calendar.core.screen
 import app.uuob.calendar.core.setAnswer
@@ -118,6 +121,8 @@ import app.uuob.client.today
 import app.uuob.kit.Btn
 import app.uuob.kit.BtnKind
 import app.uuob.kit.Check
+import app.uuob.kit.NumberWheel
+import app.uuob.kit.WebSheet
 import app.uuob.kit.Colors
 import app.uuob.kit.Icon24
 import app.uuob.kit.IconBtn
@@ -151,7 +156,7 @@ import java.time.ZoneOffset
 /** Height of an hour in the grid. */
 private val HOUR = 52.dp
 private val COLORS = listOf("blue", "red", "orange", "yellow", "green", "teal", "purple", "pink")
-private val VIEWS = listOf("1d" to "Day", "2d" to "2 days", "4d" to "4 days", "1w" to "Week", "month" to "Month")
+private val VIEWS = listOf("1d" to "1 day", "2d" to "2 days", "3d" to "3 days", "4d" to "4 days", "5d" to "5 days", "6d" to "6 days", "1w" to "Week", "month" to "Month", "year" to "Year")
 
 private fun JSONObject.arr(k: String): List<JSONObject> = objects(optJSONArray(k)?.toString())
 private fun JSONObject.strs(k: String): List<String> = optJSONArray(k)?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
@@ -195,7 +200,7 @@ class CalendarModel(private val ctx: Context) {
 
   fun state(): JSONObject {
     val st = JSONObject(data.toString())
-    st.put("view", view).put("cursor", cursor).put("narrow", narrow)
+    st.put("view", view).put("cursor", cursor).put("narrow", narrow).put("year_ok", true)
       .put("sunday_first", UuobSettings.sundayFirst).put("hour12", UuobSettings.hour12).put("now", now)
       .put("tasks", JSONArray(tasks))
     hidden?.let { st.put("hidden", JSONArray(it)) }
@@ -458,6 +463,15 @@ class CalendarModel(private val ctx: Context) {
     launch { saveSwitch(client, v.toString()) }
   }
 
+  /** The switch's views for this kind of screen, as a list (kept in order by the core). */
+  fun setViews(list: List<String>) {
+    val key = if (narrow) "narrow" else "wide"
+    val v = JSONObject(screen.optJSONObject("switch").toString())
+    v.put(key, JSONObject(switchWithList(v.getJSONObject(key).toString(), JSONArray(list).toString())))
+    views = v
+    launch { saveSwitch(client, v.toString()) }
+  }
+
   fun setBefore(b: Long?) {
     replace("prefs", "alerts", JSONObject().put("before", b ?: JSONObject.NULL))
     scheduleUpcoming()
@@ -506,7 +520,11 @@ fun CalendarScreen(model: CalendarModel, updater: Updater) {
       }
       Column(Modifier.weight(1f).fillMaxHeight().safeDrawingPadding().padding(start = if (wide) 28.dp else 12.dp, end = if (wide) 28.dp else 12.dp, top = if (wide) 26.dp else 18.dp)) {
         Header(model, s, wide)
-        if (s.optString("view") == "month") MonthView(model, s, wide) else WeekView(model, s)
+        when (s.optString("view")) {
+          "month" -> MonthView(model, s, wide)
+          "year" -> YearView(model, s, wide)
+          else -> WeekView(model, s)
+        }
       }
     }
     if (model.note.isNotEmpty() || model.busy.isNotEmpty()) {
@@ -603,7 +621,6 @@ private fun Sidebar(model: CalendarModel, s: JSONObject, updater: Updater, files
       Text("Tasks with dates", Modifier.weight(1f), fontWeight = FontWeight.Medium)
       if (!s.optBoolean("showTasks")) Icon24("lock", size = 14.dp, tint = Tokens.text3)
     }
-    if (!s.optBoolean("showTasks")) Text("Asks to read your Tasks data.", fontSize = 13.sp, color = Tokens.text2, modifier = Modifier.padding(horizontal = 8.dp))
   }
   Row(Modifier.padding(top = 20.dp).clip(Pill.shape).clickable { model.calsOpen = false; model.settingsOpen = true }.padding(horizontal = 10.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
     Icon24("settings", size = 19.dp, tint = Tokens.text2); Spacer(Modifier.width(8.dp)); Text("Settings", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Tokens.text2)
@@ -616,14 +633,24 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean) {
   val titleText = @Composable { mod: Modifier ->
     Text(
       buildAnnotatedString {
-        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(title.optString("month")) }
-        withStyle(SpanStyle(fontWeight = FontWeight.Normal, color = Tokens.text2)) { append(" ${title.optInt("year")}") }
+        if (s.optString("view") == "year") withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("${title.optInt("year")}") }
+        else {
+          withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(title.optString("month")) }
+          withStyle(SpanStyle(fontWeight = FontWeight.Normal, color = Tokens.text2)) { append(" ${title.optInt("year")}") }
+        }
       },
       mod, fontSize = if (wide) 34.sp else 28.sp, letterSpacing = (-0.8).sp, maxLines = 1,
     )
   }
   val vs = s.arr("views")
-  val switch = @Composable { Segmented(vs.map { it.optString("name") }, vs.indexOfFirst { it.optString("id") == s.optString("view") }) { model.show(vs[it].optString("id")) } }
+  val switch = @Composable { mod: Modifier, fill: Boolean ->
+    Segmented(vs.map { it.optString("name") }, vs.indexOfFirst { it.optString("id") == s.optString("view") }, mod, fill) { model.show(vs[it].optString("id")) }
+  }
+  val todayPill = @Composable {
+    Box(Modifier.height(32.dp).clip(Pill.shape).background(Tokens.surface2).clickable { model.cursor = today() }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+      Text("Today", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    }
+  }
   val nav = @Composable {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
       IconBtn("left", { model.move(-1) })
@@ -640,13 +667,17 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean) {
   }
   if (wide) {
     Row(Modifier.fillMaxWidth().padding(bottom = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-      titleText(Modifier.weight(1f)); switch(); nav(); new()
+      titleText(Modifier.weight(1f)); switch(Modifier, false); nav(); new()
     }
   } else {
     Column(Modifier.padding(bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Row(verticalAlignment = Alignment.CenterVertically) { titleText(Modifier.weight(1f)); new() }
-      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        IconBtn("menu", { model.calsOpen = true }); switch(); Spacer(Modifier.weight(1f)); nav()
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { titleText(Modifier.weight(1f)); todayPill(); new() }
+      // Phones: the views share the row evenly, so all of them fit, with the arrows at its end.
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        IconBtn("menu", { model.calsOpen = true })
+        switch(Modifier.weight(1f), true)
+        IconBtn("left", { model.move(-1) })
+        IconBtn("right", { model.move(1) })
       }
     }
   }
@@ -818,6 +849,88 @@ private fun DayColumn(model: CalendarModel, c: JSONObject, nowMinute: Int, modif
   }
 }
 
+private val MONTH_NAMES = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+/** How strongly a day in the year is shaded (0 none … 4 five hours or more planned). */
+@Composable
+private fun planColor(level: Int, other: Boolean): Color = when {
+  other -> Color.Transparent
+  level == 0 -> Tokens.surface2
+  else -> MaterialTheme.colorScheme.primary.copy(alpha = listOf(0.28f, 0.5f, 0.75f, 1f)[level - 1])
+}
+
+/** One day of the year: a rounded square, ringed when it is today; tapping opens it. */
+@Composable
+private fun PlanCell(model: CalendarModel, c: JSONObject, modifier: Modifier) {
+  val other = c.optBoolean("other")
+  Box(
+    modifier.aspectRatio(1f).clip(RoundedCornerShape(3.dp)).background(planColor(c.optInt("level"), other))
+      .then(if (c.optBoolean("today")) Modifier.border(1.5.dp, Colors.of("red"), RoundedCornerShape(3.dp)) else Modifier)
+      .then(if (other) Modifier else Modifier.clickable { model.day(c.optString("date")) }),
+  )
+}
+
+/** The year as a heat map of planned time (like GitHub's year of activity): phones a week a row, wider screens a week a column. */
+@Composable
+private fun YearView(model: CalendarModel, s: JSONObject, wide: Boolean) {
+  val y = s.optJSONObject("year") ?: return
+  val wa = y.optJSONArray("weeks") ?: JSONArray()
+  val weeks = (0 until wa.length()).map { i -> wa.getJSONArray(i).let { a -> (0 until a.length()).map { a.getJSONObject(it) } } }
+  val months = y.arr("months").associate { it.optInt("week") to it.optString("name") }
+  val heads = s.strs("monthHeads")
+  val gap = if (wide) 3.dp else 4.dp
+  Column(Modifier.fillMaxSize().padding(bottom = 16.dp)) {
+    if (wide) {
+      Row(Modifier.fillMaxWidth().padding(start = 34.dp, bottom = 6.dp)) {
+        weeks.indices.forEach { w -> Box(Modifier.weight(1f)) { months[w]?.let { Text(it, fontSize = 12.sp, color = Tokens.text2, maxLines = 1, softWrap = false) } } }
+      }
+      Row(Modifier.fillMaxWidth()) {
+        Column(Modifier.width(34.dp), verticalArrangement = Arrangement.spacedBy(gap)) {
+          heads.forEachIndexed { i, h -> Box(Modifier.weight(1f, false)) { if (i % 2 == 1) Text(h.take(3), fontSize = 11.sp, color = Tokens.text3) } }
+        }
+        weeks.forEach { week ->
+          Column(Modifier.weight(1f).padding(end = gap), verticalArrangement = Arrangement.spacedBy(gap)) {
+            week.forEach { PlanCell(model, it, Modifier.fillMaxWidth()) }
+          }
+        }
+      }
+    } else {
+      // Phones: the twelve months as small grids, three to a row, so the whole year fits.
+      val flat = weeks.flatten()
+      val byMonth = flat.withIndex().filter { !it.value.optBoolean("other") }.groupBy { it.value.optString("date").substring(5, 7) }
+      Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        byMonth.values.chunked(3).forEach { row ->
+          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            row.forEach { days ->
+              Column(Modifier.weight(1f)) {
+                val m = days.first().value.optString("date").substring(5, 7).toInt()
+                Text(MONTH_NAMES[m - 1], fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Tokens.text2, modifier = Modifier.padding(bottom = 5.dp))
+                // Blanks before the 1st, so each weekday keeps its column.
+                val cells: List<JSONObject?> = List(days.first().index % 7) { null } + days.map { it.value }
+                cells.chunked(7).forEach { week ->
+                  Row(Modifier.fillMaxWidth().padding(bottom = 2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    (0 until 7).forEach { i ->
+                      val c = week.getOrNull(i)
+                      if (c == null) Spacer(Modifier.weight(1f).aspectRatio(1f)) else PlanCell(model, c, Modifier.weight(1f))
+                    }
+                  }
+                }
+              }
+            }
+            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+          }
+        }
+      }
+    }
+    Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+      Text("${y.optInt("hours")} h planned", fontSize = 13.sp, color = Tokens.text2, modifier = Modifier.weight(1f))
+      Text("Less", fontSize = 12.sp, color = Tokens.text3)
+      (0..4).forEach { Box(Modifier.size(12.dp).clip(RoundedCornerShape(3.dp)).background(planColor(it, false))) }
+      Text("More", fontSize = 12.sp, color = Tokens.text3)
+    }
+  }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MonthView(model: CalendarModel, s: JSONObject, wide: Boolean) {
@@ -908,37 +1021,29 @@ private fun Select(options: List<Pair<String, String>>, current: String, modifie
   }
 }
 
-/** The alert picker (AlertPick.svelte): the usual times, or Custom… (minutes, hours or days, up to a week). */
+/** The alert picker: the usual times, or Custom… (days, hours and minutes before, up to a week). */
 @Composable
 private fun AlertPick(options: List<JSONObject>, current: String, plain: Boolean = false, onPick: (String) -> Unit) {
   var custom by remember { mutableStateOf(false) }
-  var n by remember { mutableStateOf("15") }
-  var per by remember { mutableStateOf("1") }
-  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    // A time chosen with Custom… shows by its name, though the list it came with doesn't have it.
-    val known = options.map { it.optString("value") to it.optString("label") }
-    val listed = if (known.any { it.first == current } || current.toLongOrNull() == null) known else known + (current to beforeLabel(current.toLong()))
-    Select(listed + ("custom" to "Custom…"), if (custom) "custom" else current, plain = plain) { v ->
-      if (v == "custom") {
-        val m = current.toLongOrNull()
-        if (m != null && m > 0) {
-          val u = listOf(1440L, 60L, 1L).first { m % it == 0L }
-          n = (m / u).toString(); per = u.toString()
-        }
-        custom = true
-      } else { custom = false; onPick(v) }
-    }
-    if (custom) {
-      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        WebField(n, { n = it }, Modifier.width(64.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-        // The unit takes what room is left, so Set keeps its size on a phone.
-        Select(listOf("1" to "minutes", "60" to "hours", "1440" to "days"), per, Modifier.weight(1f)) { per = it }
-        Text("before", fontSize = 15.sp, color = Tokens.text2)
-        Box(Modifier.height(32.dp).clip(Pill.shape).background(MaterialTheme.colorScheme.primary).clickable {
-          val m = Math.round((n.toDoubleOrNull() ?: 0.0) * per.toDouble())
-          if (m > 0) { onPick(minOf(m, 7 * 1440L).toString()); custom = false }
-        }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) { Text("Set", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+  // A time chosen with Custom… shows by its name, though the list it came with doesn't have it.
+  val known = options.map { it.optString("value") to it.optString("label") }
+  val listed = if (known.any { it.first == current } || current.toLongOrNull() == null) known else known + (current to beforeLabel(current.toLong()))
+  Select(listed + ("custom" to "Custom…"), current, plain = plain) { v -> if (v == "custom") custom = true else onPick(v) }
+  if (custom) {
+    val m = current.toLongOrNull()?.coerceAtLeast(0) ?: 15L
+    var d by remember { mutableStateOf((m / 1440).toInt()) }
+    var h by remember { mutableStateOf(((m % 1440) / 60).toInt()) }
+    var mi by remember { mutableStateOf(((m % 60) / 5 * 5).toInt()) }
+    WebSheet({ custom = false }, padding = 22.dp) {
+      Text("Alert", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp)
+      Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        NumberWheel((0..7).toList(), d, "days", { d = it }, Modifier.weight(1f))
+        NumberWheel((0..23).toList(), h, "hours", { h = it }, Modifier.weight(1f))
+        NumberWheel((0..55 step 5).toList(), mi, "minutes", { mi = it }, Modifier.weight(1f))
       }
+      Text("before the event", color = Tokens.text2, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 14.dp))
+      val total = minOf(d * 1440L + h * 60L + mi, 7 * 1440L)
+      Btn("Done", { if (total > 0) onPick(total.toString()); custom = false }, Modifier.fillMaxWidth().padding(top = 18.dp), kind = BtnKind.Primary, lg = true, enabled = total > 0)
     }
   }
 }
@@ -1035,7 +1140,6 @@ private fun CardSheet(model: CalendarModel, c: JSONObject) {
           }
         }
       }
-      Text("Your answer stays on your devices.", fontSize = 13.sp, color = Tokens.text2, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), textAlign = TextAlign.Center)
     }
   }
 }
@@ -1189,7 +1293,7 @@ private fun CalSheet(model: CalendarModel, c: JSONObject, export: (String) -> Un
   WebSheet({ model.calSheet = null }) {
     Text(if (from != null) c.optString("name") else if (id != null) "Edit calendar" else "New calendar", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp)
     if (from != null) {
-      Text("${from.optString("name")} shares this calendar with you. " + if (c.optBoolean("canWrite")) "You can both change it." else "You can view it, but not change it.", color = Tokens.text2, modifier = Modifier.padding(top = 10.dp))
+      Text("Shared by ${from.optString("name")}" + if (c.optBoolean("canWrite")) "" else " · view only", color = Tokens.text2, modifier = Modifier.padding(top = 10.dp))
     } else {
       WebField(name, { name = it }, Modifier.padding(top = 16.dp), placeholder = "Name, e.g. Work")
       FlowRow(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1200,13 +1304,12 @@ private fun CalSheet(model: CalendarModel, c: JSONObject, export: (String) -> Un
     }
     if (c.optBoolean("subscribed")) {
       val sub = model.data.arr("subs").firstOrNull { it.optString("id") == id }
-      Text("Follows a calendar link${sub?.let { ", updated ${ago(it.optLong("refreshed"))}" } ?: ""}. Its events change only at the link.", fontSize = 13.sp, color = Tokens.text2, modifier = Modifier.padding(top = 16.dp))
+      if (sub != null) Text("Updated ${ago(sub.optLong("refreshed"))}", fontSize = 13.sp, color = Tokens.text2, modifier = Modifier.padding(top = 16.dp))
       if (sub != null) ShareRow("download", "Update now") { model.refreshNow(id!!) }
     }
     if (id != null) ShareRow("share", "Save as .ics file") { export(id) }
     if (model.note.isNotEmpty()) Text(model.note, fontSize = 13.sp, color = Tokens.text2, modifier = Modifier.padding(top = 16.dp))
     if (c.optBoolean("main")) {
-      Text("Your first calendar stays private. To share events with someone, add a calendar and share that.", fontSize = 13.sp, color = Tokens.text2, modifier = Modifier.padding(top = 16.dp))
     } else if (id != null && from == null) {
       val shared = (c.optJSONArray("sharedWith")?.length() ?: 0) > 0
       ShareRow("share", if (shared) c.optString("note") else "Share calendar…") { model.share(id) }
@@ -1229,7 +1332,6 @@ private fun SubscribeSheet(model: CalendarModel) {
   var name by remember { mutableStateOf("") }
   WebSheet({ model.subscribing = false }) {
     Text("Subscribe to a link", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp)
-    Text("A calendar's .ics link, like Google's secret address or a holiday calendar. Its events stay as the link has them, read again every few hours.", color = Tokens.text2, modifier = Modifier.padding(top = 10.dp))
     Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
       WebField(url, { url = it }, placeholder = "https://… or webcal://…", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
       WebField(name, { name = it }, placeholder = "Name (optional)")
@@ -1275,22 +1377,23 @@ private fun CalendarSettings(model: CalendarModel, s: JSONObject) {
   val sw = s.getJSONObject("switch").getJSONObject(key)
   val three = sw.optBoolean("three")
   SettingsSheet(onClose = { model.settingsOpen = false }, week = true) {
-    SettingsGroup("Views", "What the switch on top offers. Phones and computers each keep their own.") {
-      SettingsRow("Third view") { Segmented(listOf("Off", "On"), if (three) 1 else 0) { model.setSwitch(JSONObject().put("three", it == 1)) } }
-      val slots = if (three) listOf("small" to "Smallest", "mid" to "Middle", "big" to "Biggest") else listOf("small" to "Small", "big" to "Big")
-      slots.forEach { (slot, name) ->
-        val others = slots.filter { it.first != slot }.map { sw.optString(it.first) }
-        SettingsRow(name, first = false) {
-          Select(VIEWS.filter { it.first == sw.optString(slot) || it.first !in others }, sw.optString(slot), Modifier.width(150.dp)) { model.setSwitch(JSONObject().put(slot, it)) }
+    SettingsGroup("Views") {
+      val on = s.arr("views").map { it.optString("id") }
+      val most = if (model.narrow) 5 else 7
+      VIEWS.forEachIndexed { i, (id, name) ->
+        val ticked = id in on
+        val can = if (ticked) on.size > 1 else on.size < most
+        SettingsRow(name, first = i == 0) {
+          Check(ticked, null, { if (can) model.setViews(if (ticked) on - id else on + id) }, enabled = can || ticked)
         }
       }
     }
-    SettingsGroup("Alerts", "For events with a time; each event can have its own, any time before it up to a week. They ring on your phones and computers, as Calendar notifications.") {
+    SettingsGroup("Alerts") {
       val before = s.opt("before").takeIf { it is Number }?.let { (it as Number).toLong() }
       val current = before?.toString() ?: "none"
       SettingsRow("Default alert") { Box(Modifier.width(190.dp)) { AlertPick(objects(alertOptions(current, before, false)), current) { model.setBefore(it.toLongOrNull()) } } }
     }
-    SettingsGroup("Invitations", "Your addresses tell which guest is you. They're learned when you import or subscribe to your own Google calendar.") {
+    SettingsGroup("Your addresses") {
       val emails = s.strs("emails")
       if (emails.isEmpty()) SettingsRow("No address yet") {}
       emails.forEachIndexed { i, a -> SettingsRow(a, first = i == 0) { IconBtn("close", { model.forgetAddress(a) }, size = 17.dp) } }

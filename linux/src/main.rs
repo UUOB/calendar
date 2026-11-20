@@ -1460,14 +1460,16 @@ impl Calendar {
         }
         let slots: &[(&str, &str)] = if three { &[("small", "Smallest"), ("mid", "Middle"), ("big", "Biggest")] } else { &[("small", "Small"), ("big", "Big")] };
         for (slot, name) in slots {
-            let drop = gtk::DropDown::from_strings(&app::VIEWS.iter().map(|v| v.1).collect::<Vec<_>>());
+            // The year view isn't drawn here yet.
+            let views: Vec<(&str, &str, i64)> = app::VIEWS.iter().copied().filter(|v| v.0 != "year").collect();
+            let drop = gtk::DropDown::from_strings(&views.iter().map(|v| v.1).collect::<Vec<_>>());
             drop.add_css_class("field");
             drop.set_width_request(170);
-            drop.set_selected(app::VIEWS.iter().position(|v| v.0 == s(&sw, slot)).unwrap_or(0) as u32);
+            drop.set_selected(views.iter().position(|v| v.0 == s(&sw, slot)).unwrap_or(0) as u32);
             let (tx, k, slot) = (sender.clone(), key.to_string(), slot.to_string());
             let others: Vec<String> = slots.iter().filter(|(o, _)| *o != slot).map(|(o, _)| s(&sw, o).to_string()).collect();
             drop.connect_selected_notify(move |d| {
-                let v = app::VIEWS[d.selected() as usize].0;
+                let v = views[d.selected() as usize].0;
                 // A view another slot shows can't be chosen twice.
                 if !others.iter().any(|o| o == v) {
                     tx.input(Msg::SetSwitch(k.clone(), json!({ slot.clone(): v })));

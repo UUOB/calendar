@@ -211,7 +211,8 @@ struct WeekView: View {
             }
             // The all-day row.
             HStack(alignment: .top, spacing: 0) {
-                Text("all-day").font(.system(size: 11)).foregroundStyle(Look.text3).frame(width: 56, alignment: .trailing).padding(.trailing, 8).padding(.top, 6)
+                // The padding inside the 56 the hours take, so the columns line up.
+                Text("all-day").font(.system(size: 11)).foregroundStyle(Look.text3).padding(.trailing, 8).padding(.top, 6).frame(width: 56, alignment: .trailing)
                 ForEach(cols, id: \.dateId) { col in
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(col.allDay.array, id: \.keyId) { p in AllDayPill(model: model, p: p) }
@@ -234,6 +235,8 @@ struct WeekView: View {
                     }
                     .frame(height: HOUR * 24)
                 }
+                // A scroll bar would take width from the days, and they'd no longer line up with the heads above.
+                .scrollIndicators(.never)
                 .onAppear { proxy.scrollTo("h7", anchor: .top) }
             }
         }

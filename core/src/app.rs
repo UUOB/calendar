@@ -26,8 +26,13 @@ use crate::zones::{self, add_days, days_between, weekday};
 use uuob_client::dates::friendly_time;
 
 pub const COLORS: [&str; 8] = ["blue", "red", "orange", "yellow", "green", "teal", "purple", "pink"];
-/// The views, shortest first: id, name, days side by side (the month: 31).
-pub const VIEWS: [(&str, &str, i64); 5] = [("1d", "Day", 1), ("2d", "2 days", 2), ("4d", "4 days", 4), ("1w", "Week", 7), ("month", "Month", 31)];
+/// The views, shortest first: id, name, days side by side (the month: 31, the year: 366).
+pub const VIEWS: [(&str, &str, i64); 9] = [
+    ("1d", "Day", 1), ("2d", "2 days", 2), ("3d", "3 days", 3), ("4d", "4 days", 4), ("5d", "5 days", 5),
+    ("6d", "6 days", 6), ("1w", "Week", 7), ("month", "Month", 31), ("year", "Year", 366),
+];
+/// The views older copies know: the old `small` / `mid` / `big` fields hold only these.
+const OLD_VIEWS: [&str; 5] = ["1d", "2d", "4d", "1w", "month"];
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -82,8 +87,67 @@ pub fn prefs_of(prefs: &[Json]) -> Json {
     })
 }
 
+/// The old fields for a list of views, so older copies still show something
+/// close: the first and last they know, and the second when there are three.
+/// None when the list has none they know (the old fields then stay as they were).
+fn old_fields(list: &[String]) -> Option<Json> {
+    let k: Vec<&String> = list.iter().filter(|v| OLD_VIEWS.contains(&v.as_str())).collect();
+    let (first, last) = (k.first()?, k.last()?);
+    let three = k.len() >= 3;
+    let mid = if three { k[1].as_str() } else { "2d" };
+    Some(json!({ "three": three, "small": first, "mid": mid, "big": last }))
+}
+
+/// The list of views a switch names (`list`), when an older copy hasn't
+/// changed the old fields since: if it has, those win.
+fn view_list(switch: &Json) -> Option<Vec<String>> {
+    let list: Vec<String> = switch.get("list")?.as_array()?.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    if list.is_empty() {
+        return None;
+    }
+    if let Some(old) = old_fields(&list) {
+        let three = truthy(switch.get("three"));
+        let same = three == truthy(old.get("three"))
+            && s(switch, "small") == s(&old, "small")
+            && s(switch, "big") == s(&old, "big")
+            && (!three || s(switch, "mid") == s(&old, "mid"));
+        if !same {
+            return None;
+        }
+    }
+    Some(list)
+}
+
+/// A switch with its list of views (any of [`VIEWS`]) set, in order, and the
+/// old fields filled from it.
+pub fn with_list(switch: &Json, list: &[String]) -> Json {
+    let mut list: Vec<String> = list.iter().filter(|v| VIEWS.iter().any(|x| x.0 == v.as_str())).cloned().collect();
+    list.sort_by_key(|v| view_order(v));
+    list.dedup();
+    let mut out = switch.clone();
+    if !out.is_object() {
+        out = json!({});
+    }
+    if let Some(old) = old_fields(&list) {
+        for (k, v) in old.as_object().into_iter().flatten() {
+            out[k] = v.clone();
+        }
+    }
+    out["list"] = json!(list);
+    out
+}
+
 /// The switch's views, shortest first (Settings may name them in any order, or one twice).
-pub fn segments(switch: &Json) -> Vec<String> {
+/// The year is left out where the screen can't draw it (`year_ok`).
+pub fn segments(switch: &Json, year_ok: bool) -> Vec<String> {
+    if let Some(mut list) = view_list(switch) {
+        list.retain(|v| VIEWS.iter().any(|x| x.0 == v.as_str()) && (year_ok || v != "year"));
+        list.sort_by_key(|v| view_order(v));
+        list.dedup();
+        if !list.is_empty() {
+            return list;
+        }
+    }
     let three = truthy(switch.get("three"));
     let keys: &[&str] = if three { &["small", "mid", "big"] } else { &["small", "big"] };
     let mut out: Vec<String> = vec![];
@@ -182,9 +246,9 @@ pub fn month_days(cursor: &str, sunday_first: bool) -> Vec<String> {
 
 /// Where Previous / Next go: a month, or as many days as are shown.
 pub fn move_cursor(view: &str, cursor: &str, dir: i64, sunday_first: bool) -> String {
-    if view == "month" {
+    if view == "month" || view == "year" {
         let (y, m, _) = zones::ymd(cursor);
-        let ms = zones::date_utc(y, m - 1 + dir, 1, 0, 0);
+        let ms = zones::date_utc(y, m - 1 + dir * if view == "year" { 12 } else { 1 }, 1, 0, 0);
         return zones::utc_date(ms);
     }
     let n = days_of(view, cursor, sunday_first).len() as i64;
@@ -304,12 +368,12 @@ pub fn screen(st: &Json) -> Json {
     let show_tasks = st.get("show_tasks").and_then(Json::as_bool).unwrap_or(p["show_tasks"] == json!(true));
     let views = st.get("views").filter(|v| v.is_object()).cloned().unwrap_or(p["views"].clone());
     let narrow = truthy(st.get("narrow"));
-    let segs = segments(&views[if narrow { "narrow" } else { "wide" }]);
+    let segs = segments(&views[if narrow { "narrow" } else { "wide" }], truthy(st.get("year_ok")));
     let mut view = s(st, "view").unwrap_or("").to_string();
     if !segs.contains(&view) {
         view = segs.first().cloned().unwrap_or_else(|| "1w".into());
     }
-    let day_view = segs.iter().find(|v| *v != "month").cloned().unwrap_or_else(|| "1d".into());
+    let day_view = segs.iter().find(|v| *v != "month" && *v != "year").cloned().unwrap_or_else(|| "1d".into());
     let sunday = truthy(st.get("sunday_first"));
     let hour12 = truthy(st.get("hour12"));
     let now = st.get("now").and_then(Json::as_i64).unwrap_or_else(zones::now_ms);
@@ -329,7 +393,8 @@ pub fn screen(st: &Json) -> Json {
         .collect();
     let shown: Vec<Json> = events.iter().filter(|e| !hidden.iter().any(|h| Some(h.as_str()) == s(e, "calendar"))).cloned().collect();
     let month = view == "month";
-    let days = if month { month_days(&cursor, sunday) } else { days_of(&view, &cursor, sunday) };
+    let is_year = view == "year";
+    let days = if is_year { year_days(&cursor, sunday) } else if month { month_days(&cursor, sunday) } else { days_of(&view, &cursor, sunday) };
     let (from, to) = (days[0].clone(), days[days.len() - 1].clone());
     let inst = expand(&shown, &from, &to);
     let map = by_day(&inst, &from, &to);
@@ -352,7 +417,10 @@ pub fn screen(st: &Json) -> Json {
     };
     let mut columns = vec![];
     let mut cells = vec![];
-    if month {
+    let mut year = Json::Null;
+    if is_year {
+        year = year_grid(&days, &map, &cursor, &t);
+    } else if month {
         let (_, cm, _) = zones::ymd(&cursor);
         for d in &days {
             let (_, m, dn) = zones::ymd(d);
@@ -398,7 +466,7 @@ pub fn screen(st: &Json) -> Json {
             }));
         }
     }
-    let title_day = if month { cursor.clone() } else { days[days.len() / 2].clone() };
+    let title_day = if month || is_year { cursor.clone() } else { days[days.len() / 2].clone() };
     let (ty, tm, _) = zones::ymd(&title_day);
     let heads: Vec<String> = month_days(&cursor, sunday).iter().take(7).map(|d| WEEKDAYS[weekday(d) as usize][..3].to_string()).collect();
     let now_minute = zones::hm(Some(&today_wall.time));
@@ -407,10 +475,81 @@ pub fn screen(st: &Json) -> Json {
         "dayView": day_view, "cursor": cursor, "today": t, "nowMinute": now_minute.0 * 60 + now_minute.1,
         "title": { "month": MONTHS[(tm - 1) as usize], "year": ty },
         "calendars": cals.iter().map(|c| { let off = hidden.iter().any(|h| Some(h.as_str()) == s(c, "id")); let mut c = c.clone(); c["hidden"] = json!(off); c }).collect::<Vec<_>>(),
-        "days": days, "columns": columns, "cells": cells, "monthHeads": heads,
+        "days": if is_year { json!([]) } else { json!(days) }, "columns": columns, "cells": cells, "monthHeads": heads, "year": year,
         "showTasks": show_tasks, "hidden": hidden, "switch": views,
         "emails": p["emails"], "before": p["before"],
     })
+}
+
+/// The year grid's days: whole weeks from the week of 1 January to the week of 31 December.
+pub fn year_days(cursor: &str, sunday_first: bool) -> Vec<String> {
+    let (y, _, _) = zones::ymd(cursor);
+    let start = week_start(&format!("{y:04}-01-01"), sunday_first);
+    let end = format!("{y:04}-12-31");
+    let mut out = vec![];
+    let mut d = start;
+    while d <= end || out.len() % 7 != 0 {
+        out.push(d.clone());
+        d = add_days(&d, 1);
+    }
+    out
+}
+
+/// Minutes of a day covered by timed events, overlaps counted once.
+pub fn planned_minutes(timed: &[Json]) -> i64 {
+    let mut spans: Vec<(i64, i64)> = timed
+        .iter()
+        .filter(|e| !truthy(e.get("all_day")))
+        .map(|e| (mins(s(e, "start")), mins(s(e, "end"))))
+        .filter(|(a, b)| b > a)
+        .collect();
+    spans.sort();
+    let (mut total, mut upto) = (0, 0);
+    for (a, b) in spans {
+        let a = a.max(upto);
+        if b > a {
+            total += b - a;
+            upto = b;
+        }
+    }
+    total
+}
+
+/// How strongly a day is shaded: none, under 1 h, 1–3 h, 3–5 h, 5 h or more.
+pub fn plan_level(minutes: i64) -> i64 {
+    match minutes {
+        0 => 0,
+        m if m < 60 => 1,
+        m if m < 180 => 2,
+        m if m < 300 => 3,
+        _ => 4,
+    }
+}
+
+/// The year view: weeks of 7 days, each with how much of it was planned, and
+/// where each month starts.
+fn year_grid(days: &[String], map: &[(String, Vec<Json>, Vec<Json>)], cursor: &str, today: &str) -> Json {
+    let (y, _, _) = zones::ymd(cursor);
+    let mut weeks = vec![];
+    let mut months = vec![];
+    let mut total = 0;
+    for (w, chunk) in days.chunks(7).enumerate() {
+        let mut week = vec![];
+        for d in chunk {
+            let (dy, dm, dn) = zones::ymd(d);
+            let minutes = map.iter().find(|x| &x.0 == d).map_or(0, |x| planned_minutes(&x.2));
+            let other = dy != y;
+            if !other {
+                total += minutes;
+                if dn == 1 {
+                    months.push(json!({ "name": &MONTHS[(dm - 1) as usize][..3], "week": w }));
+                }
+            }
+            week.push(json!({ "date": d, "minutes": minutes, "level": if other { 0 } else { plan_level(minutes) }, "other": other, "today": d == today }));
+        }
+        weeks.push(json!(week));
+    }
+    json!({ "weeks": weeks, "months": months, "hours": total / 60 })
 }
 
 /// Lays out overlapping timed events side by side: (event, lane, lanes).

@@ -152,6 +152,13 @@ pub async fn save_switch(uuob: Arc<UuobClient>, views: String) -> Result<(), uuo
     app::save_switch(uuob.inner(), &parse(&views)).await
 }
 
+/// A switch (one of `views.narrow` / `views.wide`) with its views set to `list`,
+/// in order, the fields older copies read kept in step.
+#[uniffi::export]
+pub fn switch_with_list(switch: String, list: String) -> String {
+    app::with_list(&parse(&switch), &strings(&list)).to_string()
+}
+
 #[uniffi::export]
 pub async fn save_default_alert(uuob: Arc<UuobClient>, before: Option<i64>) -> Result<(), uuob_client::Error> {
     app::save_default_alert(uuob.inner(), before).await

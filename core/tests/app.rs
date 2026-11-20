@@ -121,8 +121,8 @@ fn upcoming_leaves_out_declined_and_uses_your_alerts() {
 #[test]
 fn views_from_settings_and_moving_on() {
     let p = prefs_of(&[json!({ "id": "views", "wide": { "three": true, "mid": "2d" } })]);
-    assert_eq!(segments(&p["views"]["wide"]), ["2d", "1w", "month"]);
-    assert_eq!(segments(&p["views"]["narrow"]), ["1d", "month"]);
+    assert_eq!(segments(&p["views"]["wide"], false), ["2d", "1w", "month"]);
+    assert_eq!(segments(&p["views"]["narrow"], false), ["1d", "month"]);
     assert_eq!(prefs_of(&[])["before"], json!(10));
     assert_eq!(prefs_of(&[json!({ "id": "alerts", "before": null })])["before"], Json::Null);
     assert_eq!(move_cursor("month", "2026-01-31", 1, false), "2026-02-01");
@@ -131,4 +131,33 @@ fn views_from_settings_and_moving_on() {
     assert_eq!(name_from_url("https://calendar.google.com/calendar/ical/x%40gmail.com/public/basic.ics"), "calendar.google.com");
     assert_eq!(name_from_url("https://www.example.test/cal/Czech%20Holidays.ics?x=1"), "Czech Holidays");
     assert_eq!(export_name("Work: a/b"), "Work a b.ics");
+}
+
+#[test]
+fn views_as_a_list() {
+    use serde_json::json;
+    let old = json!({ "three": false, "small": "1d", "mid": "2d", "big": "month" });
+    let sw = with_list(&old, &["month".into(), "3d".into(), "1d".into(), "year".into(), "3d".into()]);
+    assert_eq!(sw["list"], json!(["1d", "3d", "month", "year"]));
+    // Older copies see the views they know.
+    assert_eq!((sw["small"].as_str(), sw["big"].as_str(), sw["three"].as_bool()), (Some("1d"), Some("month"), Some(false)));
+    assert_eq!(segments(&sw, true), ["1d", "3d", "month", "year"]);
+    assert_eq!(segments(&sw, false), ["1d", "3d", "month"]);
+    // An older copy changed the old fields since: those win.
+    let mut edited = sw.clone();
+    edited["small"] = json!("1w");
+    assert_eq!(segments(&edited, true), ["1w", "month"]);
+}
+
+#[test]
+fn planned_time_of_a_day() {
+    use serde_json::json;
+    let e = |a: &str, b: &str| json!({ "start": a, "end": b });
+    assert_eq!(planned_minutes(&[e("09:00", "10:00"), e("09:30", "11:00"), e("13:00", "13:30")]), 150);
+    assert_eq!(planned_minutes(&[e("22:00", "24:00")]), 120);
+    assert_eq!(planned_minutes(&[json!({ "all_day": true, "start": "00:00", "end": "24:00" })]), 0);
+    assert_eq!([0, 30, 60, 200, 400].map(plan_level), [0, 1, 2, 3, 4]);
+    let days = year_days("2026-06-15", false);
+    assert_eq!(days.len() % 7, 0);
+    assert!(days.first().unwrap().as_str() <= "2026-01-01" && days.last().unwrap().as_str() >= "2026-12-31");
 }
