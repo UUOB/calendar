@@ -155,8 +155,8 @@ pub async fn save_switch(uuob: Arc<UuobClient>, views: String) -> Result<(), uuo
 /// A switch (one of `views.narrow` / `views.wide`) with its views set to `list`,
 /// in order, the fields older copies read kept in step.
 #[uniffi::export]
-pub fn switch_with_list(switch: String, list: String) -> String {
-    app::with_list(&parse(&switch), &strings(&list)).to_string()
+pub fn switch_with_list(slot: String, list: String) -> String {
+    app::with_list(&parse(&slot), &strings(&list)).to_string()
 }
 
 #[uniffi::export]
