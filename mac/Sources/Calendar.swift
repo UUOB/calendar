@@ -18,7 +18,8 @@ let calendarApp = AppInfo(
 /// Height of an hour in the grid.
 let HOUR: CGFloat = 52
 /// The views the switch on top can offer.
-let VIEWS: [(String, String)] = [("1d", "Day"), ("2d", "2 days"), ("4d", "4 days"), ("1w", "Week"), ("month", "Month")]
+/// The views Settings offers here (the year view isn't drawn on the Mac yet).
+let VIEWS: [(String, String)] = [("1d", "1 day"), ("2d", "2 days"), ("3d", "3 days"), ("4d", "4 days"), ("5d", "5 days"), ("6d", "6 days"), ("1w", "Week"), ("month", "Month")]
 
 @main
 struct CalendarMacApp: App {
@@ -415,6 +416,17 @@ final class CalendarModel {
         } catch {
             note = "The file could not be saved."
         }
+    }
+
+    /// The switch's views for this kind of screen, as a list (kept in order by the core).
+    func setViews(_ list: [String]) {
+        let key = narrow ? "narrow" : "wide"
+        var v = (screen.switch_.value as? [String: Any]) ?? [:]
+        let slot = J(v[key]).text
+        v[key] = J(text: switchWithList(slot: slot, list: J(list).text)).value
+        views = v
+        let text = J(v).text
+        run { try await saveSwitch(uuob: self.client, views: text) }
     }
 
     func setSwitch(_ change: [String: Any]) {

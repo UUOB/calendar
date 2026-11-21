@@ -407,12 +407,17 @@ pub fn screen(st: &Json) -> Json {
     let tasks: Vec<Json> = if show_tasks { arr(&st["tasks"]).into_iter().filter(|x| !truthy(x.get("done"))).collect() } else { vec![] };
     let tasks_on = |d: &str| -> Vec<Json> { tasks.iter().filter(|x| s(x, "due") == Some(d)).map(|x| json!({ "id": x["id"], "title": x["title"], "time": x["time"] })).collect() };
 
+    // What kind of event it is, for a quiet shade of its calendar's colour on screen.
+    let now_min = { let (h, m) = zones::hm(Some(&today_wall.time)); h * 60 + m };
+    let joinable = |e: &Json| !crate::details::meeting(e).is_null();
+    let repeats = |e: &Json| e.get("series").is_some_and(|x| !x.is_null());
+    let past = |d: &str, end: Option<i64>| d < t.as_str() || (d == t.as_str() && end.is_some_and(|m| m <= now_min));
     let pill = |e: &Json, d: &str, first_shown: &str| {
         let cont = truthy(e.get("continues"));
         json!({
             "key": e["key"], "title": if cont && d != first_shown { "" } else { e.get("title").and_then(Json::as_str).unwrap_or("") },
             "color": color_of(s(e, "calendar")), "answer": answer_for(e), "continues": cont, "goesOn": truthy(e.get("goesOn")),
-            "repeats": e.get("series").is_some_and(|x| !x.is_null()),
+            "repeats": repeats(e), "join": joinable(e), "past": past(d, None),
         })
     };
     let mut columns = vec![];
@@ -434,7 +439,8 @@ pub fn screen(st: &Json) -> Json {
                 .map(|e| {
                     let row = truthy(e.get("row"));
                     let time = if !row && !truthy(e.get("continues")) { friendly_time(s(e, "start").unwrap_or("00:00"), hour12) } else { String::new() };
-                    json!({ "key": e["key"], "title": e.get("title").and_then(Json::as_str).unwrap_or(""), "time": time, "solid": row, "color": color_of(s(e, "calendar")), "answer": answer_for(e) })
+                    json!({ "key": e["key"], "title": e.get("title").and_then(Json::as_str).unwrap_or(""), "time": time, "solid": row, "color": color_of(s(e, "calendar")), "answer": answer_for(e),
+                        "repeats": repeats(e), "join": joinable(e), "past": past(d, if row { None } else { Some(mins(s(e, "end"))) }) })
                 })
                 .collect();
             let mut tk = tasks_on(d);
@@ -453,6 +459,7 @@ pub fn screen(st: &Json) -> Json {
                         "start": mins(s(&e, "start")), "end": mins(s(&e, "end")), "lane": lane, "lanes": lanes,
                         "time": block_time(&e, hour12), "startTime": friendly_time(s(&e, "start").unwrap_or("00:00"), hour12),
                         "place": place(&e), "color": color_of(s(&e, "calendar")), "answer": answer_for(&e),
+                        "repeats": repeats(&e), "join": joinable(&e), "past": past(d, Some(mins(s(&e, "end")))),
                     })
                 })
                 .collect();

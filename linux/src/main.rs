@@ -66,6 +66,8 @@ pub enum Msg {
     ImportRun(Vec<Value>),
     Settings,
     SetSwitch(String, Value),
+    /// The switch's views for this kind of screen, as a list.
+    SetViews(String, Vec<String>),
     SetBefore(Option<i64>),
     ForgetAddress(String),
     Note(String),
@@ -218,12 +220,18 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                 let (r, g, bl) = rgb(s(b, "color"));
                 let answer = s(b, "answer");
                 let declined = answer == "no";
+                // Past events fade a little, declined ones more; repeating ones are lighter,
+                // meetings to join a little deeper (quiet shades of the calendar's colour).
+                let past = b["past"] == json!(true);
+                let repeats = b["repeats"] == json!(true);
+                let join = b["join"] == json!(true);
+                let tint = if join { 0.32 } else if repeats { 0.15 } else { 0.24 };
                 let (pr, pg, pb) = page_rgb();
                 let mixed = |a: f64| (r * a + pr * (1.0 - a), g * a + pg * (1.0 - a), bl * a + pb * (1.0 - a));
                 cr.save().ok();
                 rounded(cr, x, y, bw, bh, 7.0);
                 cr.clip();
-                if declined {
+                if declined || past {
                     cr.push_group();
                 }
                 // Not answered yet: an outline; maybe: stripes; otherwise a tint (`.event`).
@@ -251,12 +259,12 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                         cr.set_line_width(1.0);
                     }
                     _ => {
-                        let m = mixed(0.24);
+                        let m = mixed(tint);
                         cr.set_source_rgb(m.0, m.1, m.2);
                         cr.paint().ok();
                     }
                 }
-                cr.set_source_rgb(r, g, bl);
+                cr.set_source_rgba(r, g, bl, if repeats { 0.55 } else { 1.0 });
                 cr.rectangle(x, y, 3.0, bh);
                 let _ = cr.fill();
                 // The title wraps over the lines the block has room for; the time goes
@@ -294,7 +302,16 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                         layout.set_markup(&small(s(b, "time")));
                         cr.move_to(x + 9.0, ty);
                         pangocairo::functions::show_layout(cr, &layout);
-                        ty += layout.pixel_size().1 as f64;
+                        // A camera for a meeting to join, arrows for a repeating event.
+                        let (tw, th) = layout.pixel_size();
+                        let mut ix = x + 9.0 + tw as f64 + 5.0;
+                        for (on, name) in [(join, "video"), (repeats, "repeat")] {
+                            if on && ix + 11.0 < x + bw {
+                                uuob_kit_gtk::draw_icon(cr, name, ix, ty + (th as f64 - 11.0) / 2.0, 11.0, 2.0);
+                                ix += 15.0;
+                            }
+                        }
+                        ty += th as f64;
                     }
                     if !place.is_empty() {
                         layout.set_markup(&small(place));
@@ -304,9 +321,9 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                 }
                 layout.set_ellipsize(gtk::pango::EllipsizeMode::None);
                 layout.set_height(-1);
-                if declined {
+                if declined || past {
                     cr.pop_group_to_source().ok();
-                    cr.paint_with_alpha(0.45).ok();
+                    cr.paint_with_alpha(if declined { 0.45 } else { 0.6 }).ok();
                 }
                 cr.restore().ok();
             }
@@ -441,7 +458,7 @@ fn style() {
         // The palette's colour (light or dark as the theme is).
         let col = format!("@uuob_{c}");
         checks.push_str(&format!(".uuob-check-{c} check:checked {{ background: {col}; border-color: {col}; color: white; }} .uuob-check-{c} check {{ border-color: {col}; }}\n"));
-        checks.push_str(&format!(".tint-{c} {{ background: alpha({col}, 0.22); color: mix({col}, @window_fg_color, 0.3); }} .tint-{c}.answer-invited {{ background: @window_bg_color; box-shadow: inset 0 0 0 1px alpha({col}, 0.7); }} .tint-{c}.answer-maybe {{ background: alpha({col}, 0.13); }}\n"));
+        checks.push_str(&format!(".tint-{c} {{ background: alpha({col}, 0.22); color: mix({col}, @window_fg_color, 0.3); }} .tint-{c}.answer-invited {{ background: @window_bg_color; box-shadow: inset 0 0 0 1px alpha({col}, 0.7); }} .tint-{c}.answer-maybe {{ background: alpha({col}, 0.13); }} .tint-{c}.k-repeat {{ background: alpha({col}, 0.13); }} .tint-{c}.k-join {{ background: alpha({col}, 0.30); }}\n"));
     }
     css.load_from_string(&format!(
         "{checks}
@@ -484,6 +501,12 @@ fn style() {
          .tick {{ min-width: 7px; min-height: 7px; border-radius: 999px; border: 1.5px solid @uuob_text3; }}
          .task {{ background: @uuob_surface2; color: @uuob_text2; }}
          .join-host {{ opacity: 0.75; font-weight: 400; }}
+         .k-past {{ opacity: 0.6; }}
+         .dot.k-repeat {{ opacity: 0.55; }}
+         entry.title-plain {{ font-size: 22px; font-weight: 600; background: none; border: none; box-shadow: none; outline: none; padding: 0; min-height: 40px; }}
+         .cal-line dropdown > button {{ background: none; box-shadow: none; padding: 0 4px; min-height: 24px; font-size: 13px; color: @uuob_text2; }}
+         .row-key {{ color: @uuob_text2; }}
+         spinbutton.small-num {{ min-width: 0; }}
          .ad-pill.cont {{ border-top-left-radius: 0; border-bottom-left-radius: 0; }}
          .ad-pill.on {{ border-top-right-radius: 0; border-bottom-right-radius: 0; }}
          .answer-no {{ opacity: 0.45; }}
@@ -534,12 +557,6 @@ fn open_uri(uri: &str) {
 }
 
 /// `label.stack`: a small grey label above its field.
-fn stack_box(text: &str) -> gtk::Box {
-    let b = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).hexpand(true).build();
-    b.append(&gtk::Label::builder().label(text).xalign(0.0).css_classes(["stack-label"]).build());
-    b
-}
-
 /// An alert picker: the usual times, or Custom… (a number of minutes, hours or days, up to a week).
 fn alert_pick(options: Value, current: String, on_pick: impl Fn(String) + 'static) -> gtk::Box {
     // What each item gives; the last is Custom….
@@ -661,6 +678,16 @@ fn dialog(title: &str, width: i32, content: &gtk::Box) -> (adw::Dialog, adw::Hea
     view.set_content(Some(&scroll));
     d.set_child(Some(&view));
     (d, header)
+}
+
+/// What kind of event it is, as classes for a quiet shade: repeating,
+/// a meeting to join, or past.
+fn kind_class(w: &impl IsA<gtk::Widget>, e: &Value) {
+    for (k, c) in [("repeats", "k-repeat"), ("join", "k-join"), ("past", "k-past")] {
+        if e[k] == json!(true) {
+            w.add_css_class(c);
+        }
+    }
 }
 
 fn form() -> gtk::Box {
@@ -816,6 +843,7 @@ impl Calendar {
                     b.add_css_class("on");
                 }
                 answer_class(&b, &p["answer"]);
+                kind_class(&b, &p);
                 let (tx, key) = (sender.clone(), s(&p, "key").to_string());
                 b.connect_clicked(move |_| tx.input(Msg::Open(key.clone())));
                 cell.append(&b);
@@ -868,13 +896,18 @@ impl Calendar {
                     b.add_css_class(&format!("tint-{}", s(&it, "color")));
                     b.add_css_class("solid");
                 } else {
-                    line.append(&gtk::Box::builder().valign(gtk::Align::Center).css_classes(["dot", &format!("uuob-c-{}", s(&it, "color"))]).build());
+                    let dot = gtk::Box::builder().valign(gtk::Align::Center).css_classes(["dot", &format!("uuob-c-{}", s(&it, "color"))]).build();
+                    if it["repeats"] == json!(true) {
+                        dot.add_css_class("k-repeat");
+                    }
+                    line.append(&dot);
                 }
                 // Phones show only the dots (and the bars of all-day events), as on the web.
                 let text = if self.narrow { String::new() } else if s(&it, "time").is_empty() { s(&it, "title").to_string() } else { format!("{} {}", s(&it, "time"), s(&it, "title")) };
                 line.append(&gtk::Label::builder().label(text).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build());
                 b.set_child(Some(&line));
                 answer_class(&b, &it["answer"]);
+                kind_class(&b, &it);
                 let (tx, key) = (sender.clone(), s(&it, "key").to_string());
                 b.connect_clicked(move |_| tx.input(Msg::Open(key.clone())));
                 cell.append(&b);
@@ -926,10 +959,7 @@ impl Calendar {
             col.append(&b);
         }
         if !s(&c, "place").is_empty() {
-            let row = gtk::Box::builder().spacing(8).build();
-            row.append(&uuob_kit_gtk::icon("place", 17, 1.75, uuob_kit_gtk::text2()));
-            row.append(&label(s(&c, "place"), &[]));
-            col.append(&row);
+            col.append(&uuob_kit_gtk::icon_row(Some("place"), &label(s(&c, "place"), &[])));
         }
         if let Some(u) = c["url"].as_str() {
             let l = label("", &[]);
@@ -937,14 +967,10 @@ impl Calendar {
             col.append(&l);
         }
         if c["timed"] == json!(true) {
-            let row = gtk::Box::builder().spacing(8).build();
-            let bell = uuob_kit_gtk::icon("bell", 17, 1.75, uuob_kit_gtk::text2());
-            bell.set_valign(gtk::Align::Start);
-            bell.set_margin_top(14);
-            row.append(&bell);
             let (tx, ak) = (sender.clone(), s(&c, "answerKey").to_string());
-            row.append(&alert_pick(c["alertOptions"].clone(), s(&c, "alert").to_string(), move |v| tx.input(Msg::OwnAlert(ak.clone(), v))));
-            col.append(&row);
+            let pick = alert_pick(c["alertOptions"].clone(), s(&c, "alert").to_string(), move |v| tx.input(Msg::OwnAlert(ak.clone(), v)));
+            pick.set_halign(gtk::Align::Start);
+            col.append(&uuob_kit_gtk::icon_row(Some("bell"), &pick));
         }
         let people = arr(&c["people"]);
         if !people.is_empty() {
@@ -1006,16 +1032,43 @@ impl Calendar {
     fn show_sheet(&self, ed: Value, root: &adw::ApplicationWindow, sender: &ComponentSender<Self>) {
         let hour12 = uuob_kit_gtk::hour12(&self.client);
         let ed = Rc::new(RefCell::new(ed));
+        // As on the card: the title big and without a box, the calendar under it, then rows with icons.
         let col = form();
-        let title = gtk::Entry::builder().placeholder_text("New event").text(s(&ed.borrow(), "title")).css_classes(["field", "field-title"]).build();
+        col.set_spacing(0);
+        let title = gtk::Entry::builder().placeholder_text("New event").text(s(&ed.borrow(), "title")).css_classes(["title-plain"]).build();
         col.append(&title);
+        let cals: Vec<Value> = arr(&self.screen["calendars"]).into_iter().filter(|c| c["canEdit"] == json!(true) || c["id"] == ed.borrow()["calendar"]).collect();
+        let cal_line = gtk::Box::builder().spacing(4).css_classes(["cal-line"]).margin_bottom(8).build();
+        let dot = gtk::Box::builder().valign(gtk::Align::Center).css_classes(["dot"]).build();
+        let set_dot = {
+            let dot = dot.clone();
+            move |c: &str| {
+                for k in uuob_kit_gtk::COLORS {
+                    dot.remove_css_class(&format!("uuob-c-{k}"));
+                }
+                dot.add_css_class(&format!("uuob-c-{c}"));
+            }
+        };
+        let cur = cals.iter().find(|c| c["id"] == ed.borrow()["calendar"]).or(cals.first());
+        set_dot(cur.map_or("blue", |c| s(c, "color")));
+        cal_line.append(&dot);
+        let cal_drop = gtk::DropDown::from_strings(&cals.iter().map(|c| s(c, "name")).collect::<Vec<_>>());
+        cal_drop.set_selected(cals.iter().position(|c| c["id"] == ed.borrow()["calendar"]).unwrap_or(0) as u32);
+        {
+            let (ed, cals) = (ed.clone(), cals.clone());
+            cal_drop.connect_selected_notify(move |d| {
+                if let Some(c) = cals.get(d.selected() as usize) {
+                    ed.borrow_mut()["calendar"] = c["id"].clone();
+                    set_dot(s(c, "color"));
+                }
+            });
+        }
+        cal_line.append(&cal_drop);
+        col.append(&cal_line);
         let all_day = gtk::Switch::builder().active(ed.borrow()["all_day"] == json!(true)).valign(gtk::Align::Center).build();
-        let ad_row = gtk::Box::builder().spacing(10).build();
-        ad_row.append(&gtk::Label::builder().label("All-day").hexpand(true).xalign(0.0).build());
-        ad_row.append(&all_day);
-        col.append(&ad_row);
+        col.append(&uuob_kit_gtk::icon_setting_row(Some("clock"), "All-day", &all_day));
         // Starts and ends (dates, and times unless all-day).
-        let times_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).build();
+        let times_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
         col.append(&times_box);
         let build_times: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
         let bt: Rc<dyn Fn()> = {
@@ -1025,12 +1078,11 @@ impl Calendar {
                 let e = ed.borrow().clone();
                 let all = e["all_day"] == json!(true);
                 for (lab, dk, tk) in [("Starts", "date", "start"), ("Ends", "end_date", "end")] {
-                    let row = gtk::Box::builder().spacing(10).homogeneous(true).build();
-                    let st = stack_box(lab);
-                    row.append(&st);
+                    let row = gtk::Box::builder().spacing(8).build();
+                    row.append(&gtk::Label::builder().label(lab).xalign(0.0).hexpand(true).css_classes(["row-key"]).build());
                     let (ed2, me2) = (ed.clone(), me.clone());
                     let starts = dk == "date";
-                    st.append(&date_button(s(&e, dk), move |d| {
+                    let db = date_button(s(&e, dk), move |d| {
                         let next = if starts {
                             app::move_start(&ed2.borrow(), &d)
                         } else {
@@ -1045,7 +1097,9 @@ impl Calendar {
                                 glib::idle_add_local_once(move || f());
                             }
                         }
-                    }));
+                    });
+                    db.set_hexpand(false);
+                    row.append(&db);
                     if !all {
                         let (ed3, tk) = (ed.clone(), tk.to_string());
                         let tf = uuob_kit_gtk::time_field(Some(s(&e, &tk).to_string()), hour12, false, "", move |t| {
@@ -1053,10 +1107,13 @@ impl Calendar {
                                 ed3.borrow_mut()[tk.as_str()] = json!(t);
                             }
                         });
-                        tf.set_valign(gtk::Align::End);
+                        tf.set_width_chars(6);
+                        tf.set_max_width_chars(6);
+                        tf.set_hexpand(false);
+                        gtk::prelude::EditableExt::set_alignment(&tf, 1.0);
                         row.append(&tf);
                     }
-                    times_box.append(&row);
+                    times_box.append(&uuob_kit_gtk::icon_row(None, &row));
                 }
             })
         };
@@ -1070,7 +1127,7 @@ impl Calendar {
             });
         }
         // Repeat.
-        let rep_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).build();
+        let rep_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
         col.append(&rep_box);
         let build_repeat: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
         let br: Rc<dyn Fn()> = {
@@ -1091,10 +1148,9 @@ impl Calendar {
                 if r["raw"].is_string() {
                     freqs.push(("CUSTOM".into(), s(&r, "label").to_string()));
                 }
-                let row = stack_box("Repeat");
                 let drop = gtk::DropDown::from_strings(&freqs.iter().map(|f| f.1.as_str()).collect::<Vec<_>>());
                 drop.add_css_class("field");
-                drop.set_hexpand(true);
+                drop.set_halign(gtk::Align::Start);
                 drop.set_selected(freqs.iter().position(|f| f.0 == freq).unwrap_or(0) as u32);
                 {
                     let (ed, again, codes) = (ed.clone(), again.clone(), freqs.iter().map(|f| f.0.clone()).collect::<Vec<_>>());
@@ -1103,8 +1159,7 @@ impl Calendar {
                         again();
                     });
                 }
-                row.append(&drop);
-                rep_box.append(&row);
+                rep_box.append(&uuob_kit_gtk::icon_row(Some("repeat"), &drop));
                 if freq == "WEEKLY" {
                     let days = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).build();
                     for (code, letter) in [("MO", "M"), ("TU", "T"), ("WE", "W"), ("TH", "T"), ("FR", "F"), ("SA", "S"), ("SU", "S")] {
@@ -1127,7 +1182,9 @@ impl Calendar {
                         });
                         days.append(&b);
                     }
-                    rep_box.append(&days);
+                    days.set_margin_top(8);
+                    days.set_margin_bottom(8);
+                    rep_box.append(&uuob_kit_gtk::icon_row(None, &days));
                 }
                 if freq != "NONE" && freq != "CUSTOM" {
                     let unit = match freq.as_str() {
@@ -1136,19 +1193,17 @@ impl Calendar {
                         "MONTHLY" => "months",
                         _ => "years",
                     };
-                    let every_st = stack_box("Every");
-                    let every = gtk::Box::builder().spacing(10).build();
-                    every_st.append(&every);
+                    let every = gtk::Box::builder().spacing(8).build();
+                    every.append(&gtk::Label::builder().label("Every").css_classes(["row-key"]).build());
                     let n = gtk::SpinButton::with_range(1.0, 99.0, 1.0);
                     n.add_css_class("field");
                     n.set_value(r["interval"].as_f64().unwrap_or(1.0));
                     let ed2 = ed.clone();
                     n.connect_value_changed(move |n| ed2.borrow_mut()["repeat"]["interval"] = json!(n.value() as i64));
                     every.append(&n);
-                    every.append(&gtk::Label::builder().label(unit).css_classes(["unit"]).build());
-                    let until = stack_box("Until");
+                    every.append(&gtk::Label::builder().label(unit).hexpand(true).xalign(0.0).css_classes(["row-key"]).build());
                     let ends = ["never", "until", "count"];
-                    let ends_drop = gtk::DropDown::from_strings(&["Forever", "A date", "A number of times"]);
+                    let ends_drop = gtk::DropDown::from_strings(&["forever", "until a date", "a number of times"]);
                     ends_drop.add_css_class("field");
                     ends_drop.set_selected(ends.iter().position(|e| *e == s(&r, "ends")).unwrap_or(0) as u32);
                     {
@@ -1158,15 +1213,15 @@ impl Calendar {
                             again();
                         });
                     }
-                    until.append(&ends_drop);
-                    let two = gtk::Box::builder().spacing(10).homogeneous(true).build();
-                    two.append(&every_st);
-                    two.append(&until);
-                    rep_box.append(&two);
+                    every.append(&ends_drop);
+                    rep_box.append(&uuob_kit_gtk::icon_row(None, &every));
                     match s(&r, "ends") {
                         "until" => {
                             let ed = ed.clone();
-                            rep_box.append(&date_button(s(&r, "until"), move |d| ed.borrow_mut()["repeat"]["until"] = json!(d)));
+                            let db = date_button(s(&r, "until"), move |d| ed.borrow_mut()["repeat"]["until"] = json!(d));
+                            db.set_hexpand(false);
+                            db.set_halign(gtk::Align::Start);
+                            rep_box.append(&uuob_kit_gtk::icon_row(None, &db));
                         }
                         "count" => {
                             let c = gtk::SpinButton::with_range(1.0, 999.0, 1.0);
@@ -1176,8 +1231,8 @@ impl Calendar {
                             c.connect_value_changed(move |c| ed.borrow_mut()["repeat"]["count"] = json!(c.value() as i64));
                             let line = gtk::Box::builder().spacing(10).build();
                             line.append(&c);
-                            line.append(&gtk::Label::builder().label("times").css_classes(["unit"]).build());
-                            rep_box.append(&line);
+                            line.append(&gtk::Label::builder().label("times").css_classes(["row-key"]).build());
+                            rep_box.append(&uuob_kit_gtk::icon_row(None, &line));
                         }
                         _ => {}
                     }
@@ -1186,44 +1241,30 @@ impl Calendar {
         };
         *build_repeat.borrow_mut() = Some(br.clone());
         br();
-        // Alert, calendar, place, notes.
+        // Alert, place, notes.
         if ed.borrow()["all_day"] != json!(true) {
-            let row = stack_box("Alert");
             let before = self.screen["before"].as_i64();
             let current = s(&ed.borrow(), "alert").to_string();
             let ed2 = ed.clone();
-            row.append(&alert_pick(app::alert_options(&current, before, true), current, move |v| ed2.borrow_mut()["alert"] = json!(v)));
-            col.append(&row);
+            let pick = alert_pick(app::alert_options(&current, before, true), current, move |v| ed2.borrow_mut()["alert"] = json!(v));
+            pick.set_halign(gtk::Align::Start);
+            col.append(&uuob_kit_gtk::icon_row(Some("bell"), &pick));
         }
-        let cals: Vec<Value> = arr(&self.screen["calendars"]).into_iter().filter(|c| c["canEdit"] == json!(true) || c["id"] == ed.borrow()["calendar"]).collect();
-        let row = stack_box("Calendar");
-        let cal_drop = gtk::DropDown::from_strings(&cals.iter().map(|c| s(c, "name")).collect::<Vec<_>>());
-        cal_drop.add_css_class("field");
-        cal_drop.set_hexpand(true);
-        cal_drop.set_selected(cals.iter().position(|c| c["id"] == ed.borrow()["calendar"]).unwrap_or(0) as u32);
-        {
-            let (ed, cals) = (ed.clone(), cals.clone());
-            cal_drop.connect_selected_notify(move |d| {
-                if let Some(c) = cals.get(d.selected() as usize) {
-                    ed.borrow_mut()["calendar"] = c["id"].clone();
-                }
-            });
-        }
-        row.append(&cal_drop);
-        col.append(&row);
         let place = gtk::Entry::builder().placeholder_text("Location").text(s(&ed.borrow(), "location")).css_classes(["field"]).build();
-        col.append(&place);
-        let notes = gtk::TextView::builder().wrap_mode(gtk::WrapMode::WordChar).top_margin(4).bottom_margin(4).left_margin(10).right_margin(10).height_request(90).css_classes(["field"]).build();
+        col.append(&uuob_kit_gtk::icon_row(Some("place"), &place));
+        let notes = gtk::TextView::builder().wrap_mode(gtk::WrapMode::WordChar).top_margin(10).bottom_margin(10).height_request(60).css_classes(["field"]).build();
         notes.buffer().set_text(s(&ed.borrow(), "notes"));
-        col.append(&notes);
+        let notes_row = uuob_kit_gtk::icon_row(Some("notes"), &notes);
+        notes_row.add_css_class("last");
+        col.append(&notes_row);
         let is_new = ed.borrow()["id"].as_str().is_none_or(str::is_empty);
-        let (d, _) = dialog(if is_new { "New event" } else { "Edit event" }, 460, &col);
-        let actions = gtk::Box::builder().spacing(10).homogeneous(true).margin_top(6).build();
-        let left = uuob_kit_gtk::btn(if is_new { "Cancel" } else { "Delete" }, None, &["lg"]);
+        let (d, _) = dialog("", 460, &col);
+        let actions = gtk::Box::builder().spacing(10).margin_top(18).build();
+        let left = uuob_kit_gtk::btn(if is_new { "Cancel" } else { "Delete" }, None, &[]);
         if !is_new {
             left.add_css_class("danger");
         }
-        let save = uuob_kit_gtk::btn(if is_new { "Add" } else { "Save" }, None, &["lg", "primary"]);
+        let save = uuob_kit_gtk::btn(if is_new { "Add" } else { "Save" }, None, &["primary"]);
         let collect = {
             let (ed, title, place, notes) = (ed.clone(), title.clone(), place.clone(), notes.clone());
             Rc::new(move || {
@@ -1257,6 +1298,7 @@ impl Calendar {
             });
         }
         actions.append(&left);
+        actions.append(&gtk::Box::builder().hexpand(true).build());
         actions.append(&save);
         col.append(&actions);
         d.present(Some(root));
@@ -1451,55 +1493,43 @@ impl Calendar {
 
     fn show_settings(&self, root: &adw::ApplicationWindow, sender: &ComponentSender<Self>) {
         let key = if self.narrow { "narrow" } else { "wide" };
-        let sw = self.screen["switch"][key].clone();
+        // Tick the views the switch on top offers; it shows them shortest first.
+        let on: Vec<String> = arr(&self.screen["views"]).iter().map(|v| s(v, "id").to_string()).collect();
+        let names = [("1d", "1 day"), ("2d", "2 days"), ("3d", "3 days"), ("4d", "4 days"), ("5d", "5 days"), ("6d", "6 days"), ("1w", "Week"), ("month", "Month")];
         let mut view_rows = vec![];
-        let three = sw["three"] == json!(true);
-        {
-            let (tx, k) = (sender.clone(), key.to_string());
-            view_rows.push(uuob_kit_gtk::choice_row("Third view", &["Off", "On"], three as usize, move |i| tx.input(Msg::SetSwitch(k.clone(), json!({ "three": i == 1 })))));
-        }
-        let slots: &[(&str, &str)] = if three { &[("small", "Smallest"), ("mid", "Middle"), ("big", "Biggest")] } else { &[("small", "Small"), ("big", "Big")] };
-        for (slot, name) in slots {
-            // The year view isn't drawn here yet.
-            let views: Vec<(&str, &str, i64)> = app::VIEWS.iter().copied().filter(|v| v.0 != "year").collect();
-            let drop = gtk::DropDown::from_strings(&views.iter().map(|v| v.1).collect::<Vec<_>>());
-            drop.add_css_class("field");
-            drop.set_width_request(170);
-            drop.set_selected(views.iter().position(|v| v.0 == s(&sw, slot)).unwrap_or(0) as u32);
-            let (tx, k, slot) = (sender.clone(), key.to_string(), slot.to_string());
-            let others: Vec<String> = slots.iter().filter(|(o, _)| *o != slot).map(|(o, _)| s(&sw, o).to_string()).collect();
-            drop.connect_selected_notify(move |d| {
-                let v = views[d.selected() as usize].0;
-                // A view another slot shows can't be chosen twice.
-                if !others.iter().any(|o| o == v) {
-                    tx.input(Msg::SetSwitch(k.clone(), json!({ slot.clone(): v })));
-                }
+        for (i, (id, name)) in names.iter().enumerate() {
+            let ticked = on.iter().any(|v| v == id);
+            let can = if ticked { on.len() > 1 } else { on.len() < 6 };
+            let check = gtk::CheckButton::builder().active(ticked).sensitive(can || ticked).css_classes(["round-check"]).build();
+            let (tx, k, id, list) = (sender.clone(), key.to_string(), id.to_string(), on.clone());
+            check.connect_toggled(move |c| {
+                let mut l = list.clone();
+                if c.is_active() { l.push(id.clone()) } else { l.retain(|v| *v != id) }
+                if !l.is_empty() { tx.input(Msg::SetViews(k.clone(), l)) }
             });
-            view_rows.push(uuob_kit_gtk::setting_row(name, &drop));
+            view_rows.push(uuob_kit_gtk::icon_setting_row(if i == 0 { Some("calendar") } else { None }, name, &check).upcast());
         }
-        let views = uuob_kit_gtk::group("Views", "What the switch on top offers. Phones and computers each keep their own.", view_rows);
+        let views = uuob_kit_gtk::group("Views", "", view_rows);
         let before = self.screen["before"].as_i64();
         let tx = sender.clone();
         let current = before.map_or("none".to_string(), |b| b.to_string());
         let pick = alert_pick(app::alert_options(&current, before, false), current, move |v| tx.input(Msg::SetBefore(v.parse().ok())));
-        pick.set_width_request(220);
+        pick.set_width_request(200);
         pick.set_hexpand(false);
-        let alerts = uuob_kit_gtk::group("Alerts", "For events with a time; each event can have its own, any time before it up to a week. They ring on your phones and computers, as Calendar notifications.", vec![uuob_kit_gtk::setting_row("Default alert", &pick)]);
+        let mut rows = vec![uuob_kit_gtk::icon_setting_row(Some("bell"), "Default alert", &pick).upcast::<gtk::Widget>()];
         let emails = self.emails();
-        let mut inv_rows = vec![];
-        if emails.is_empty() {
-            inv_rows.push(uuob_kit_gtk::text_row("No address yet"));
-        }
+        let none = gtk::Label::builder().label(if emails.is_empty() { "None yet" } else { "" }).css_classes(["dim-label"]).build();
+        rows.push(uuob_kit_gtk::icon_setting_row(Some("at"), "Your addresses", &none).upcast());
         for a in emails {
-            let b = uuob_kit_gtk::icon_btn("close", 16, "Remove");
+            let b = uuob_kit_gtk::icon_btn("close", 15, "Remove");
             let tx = sender.clone();
             let addr = a.clone();
             b.connect_clicked(move |_| tx.input(Msg::ForgetAddress(addr.clone())));
-            inv_rows.push(uuob_kit_gtk::setting_row(&a, &b));
+            rows.push(uuob_kit_gtk::icon_setting_row(None, &a, &b).upcast());
         }
-        let inv = uuob_kit_gtk::group("Invitations", "Your addresses tell which guest is you. They're learned when you import or subscribe to your own Google calendar.", inv_rows);
+        let events = uuob_kit_gtk::group("Events", "", rows);
         let tx = sender.clone();
-        uuob_kit_gtk::settings_dialog(&self.info, &self.client, true, vec![views, alerts, inv], move || tx.input(Msg::Redraw)).present(Some(root));
+        uuob_kit_gtk::settings_dialog(&self.info, &self.client, true, vec![views, events], move || tx.input(Msg::Redraw)).present(Some(root));
     }
 }
 
@@ -1560,7 +1590,6 @@ impl relm4::Component for Calendar {
         side.append(&cals);
         side.append(&gtk::Label::builder().label("FROM OTHER APPS").xalign(0.0).css_classes(["section-label", "side-label", "other-apps"]).build());
         side.append(&tasks_check);
-        side.append(&gtk::Label::builder().label("Asks to read your Tasks data.").xalign(0.0).margin_start(30).css_classes(["caption", "dim-label"]).build());
         side.append(&settings);
         let side_view = adw::ToolbarView::new();
         let sh = adw::HeaderBar::builder().show_title(false).build();
@@ -2030,6 +2059,15 @@ impl relm4::Component for Calendar {
                 for (k, v) in change.as_object().into_iter().flatten() {
                     views[key.as_str()][k.as_str()] = v.clone();
                 }
+                self.views = Some(views.clone());
+                sender.oneshot_command(async move {
+                    let _ = app::save_switch(&client, &views).await;
+                    Cmd::Done
+                });
+            }
+            Msg::SetViews(key, list) => {
+                let mut views = self.screen["switch"].clone();
+                views[key.as_str()] = app::with_list(&views[key.as_str()], &list);
                 self.views = Some(views.clone());
                 sender.oneshot_command(async move {
                     let _ = app::save_switch(&client, &views).await;

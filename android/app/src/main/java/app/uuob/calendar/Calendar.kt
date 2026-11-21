@@ -121,6 +121,9 @@ import app.uuob.client.today
 import app.uuob.kit.Btn
 import app.uuob.kit.BtnKind
 import app.uuob.kit.Check
+import app.uuob.kit.IconRow
+import app.uuob.kit.ProvideText
+import app.uuob.kit.WebSwitch
 import app.uuob.kit.NumberWheel
 import app.uuob.kit.WebSheet
 import app.uuob.kit.Colors
@@ -687,6 +690,15 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean) {
 private fun mix(a: Color, p: Float, b: Color) = Color(a.red * p + b.red * (1 - p), a.green * p + b.green * (1 - p), a.blue * p + b.blue * (1 - p), 1f)
 
 /** The look of an event by your answer: invited is an outline, maybe striped, no faded and struck through. */
+/** How strongly an event is tinted, by kind: a meeting to join a little deeper, a repeating one lighter. */
+private fun tintOf(e: JSONObject, base: Float = 0.24f): Float = when {
+  e.optBoolean("join") -> base + 0.08f
+  e.optBoolean("repeats") -> base - 0.09f
+  else -> base
+}
+/** Past events fade a little, declined ones more. */
+private fun fadeOf(e: JSONObject): Float = if (e.text("answer") == "no") 0.45f else if (e.optBoolean("past")) 0.6f else 1f
+
 @Composable
 private fun Modifier.eventLook(c: Color, answer: String?, strength: Float, shape: RoundedCornerShape): Modifier {
   val bg = MaterialTheme.colorScheme.background
@@ -735,7 +747,7 @@ private fun WeekView(model: CalendarModel, s: JSONObject) {
           val shape = RoundedCornerShape(topStart = if (p.optBoolean("continues")) 0.dp else 6.dp, bottomStart = if (p.optBoolean("continues")) 0.dp else 6.dp, topEnd = if (p.optBoolean("goesOn")) 0.dp else 6.dp, bottomEnd = if (p.optBoolean("goesOn")) 0.dp else 6.dp)
           val answer = p.text("answer")
           Row(
-            Modifier.fillMaxWidth().heightIn(min = 21.dp).alpha(if (answer == "no") 0.45f else 1f).clip(shape).eventLook(col, answer, 0.22f, shape).clickable { model.open(p.optString("key")) }.padding(horizontal = 8.dp, vertical = 3.dp),
+            Modifier.fillMaxWidth().heightIn(min = 21.dp).alpha(fadeOf(p)).clip(shape).eventLook(col, answer, tintOf(p, 0.22f), shape).clickable { model.open(p.optString("key")) }.padding(horizontal = 8.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
           ) {
             val fg = mix(col, 0.7f, MaterialTheme.colorScheme.onSurface)
@@ -810,10 +822,10 @@ private fun DayColumn(model: CalendarModel, c: JSONObject, nowMinute: Int, modif
       val pressed by src.collectIsPressedAsState()
       Box(
         Modifier.offset(x = bw * lane + 2.dp, y = top).width(bw - 4.dp).height(h).scale(if (pressed) 0.98f else 1f)
-          .alpha(if (answer == "no") 0.45f else 1f).clip(shape).eventLook(col, answer, 0.24f, shape)
+          .alpha(fadeOf(b)).clip(shape).eventLook(col, answer, tintOf(b), shape)
           .clickable(src, null) { model.open(b.optString("key")) },
       ) {
-        Box(Modifier.width(3.dp).fillMaxHeight().background(col))
+        Box(Modifier.width(3.dp).fillMaxHeight().background(col.copy(alpha = if (b.optBoolean("repeats")) 0.55f else 1f)))
         val fg = mix(col, 0.55f, MaterialTheme.colorScheme.onSurface)
         val short = h < 38.dp
         Column(Modifier.padding(start = 8.dp, end = 4.dp, top = if (short) 2.dp else 3.dp).fillMaxHeight(), verticalArrangement = if (short) Arrangement.Center else Arrangement.spacedBy(1.dp)) {
@@ -828,7 +840,12 @@ private fun DayColumn(model: CalendarModel, c: JSONObject, nowMinute: Int, modif
             fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 15.sp, color = fg, maxLines = if (timeLine) room - 1 else room, overflow = TextOverflow.Ellipsis,
             textDecoration = if (answer == "no") TextDecoration.LineThrough else null,
           )
-          if (timeLine) Text(b.optString("time"), fontSize = 12.sp, lineHeight = 15.sp, color = fg.copy(alpha = 0.85f), maxLines = 1)
+          if (timeLine) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(b.optString("time"), fontSize = 12.sp, lineHeight = 15.sp, color = fg.copy(alpha = 0.85f), maxLines = 1)
+            // A camera for a meeting to join, arrows for a repeating event.
+            if (b.optBoolean("join")) Icon24("video", size = 12.dp, stroke = 2f, tint = fg.copy(alpha = 0.85f))
+            if (b.optBoolean("repeats")) Icon24("repeat", size = 10.dp, stroke = 2.2f, tint = fg.copy(alpha = 0.85f))
+          }
           if (where.isNotEmpty()) Text(where, fontSize = 12.sp, lineHeight = 15.sp, color = fg.copy(alpha = 0.85f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
       }
@@ -961,10 +978,10 @@ private fun MonthView(model: CalendarModel, s: JSONObject, wide: Boolean) {
                 val solid = it2.optBoolean("solid")
                 val answer = it2.text("answer")
                 Row(
-                  Modifier.fillMaxWidth().alpha(if (answer == "no") 0.45f else 1f).clip(RoundedCornerShape(6.dp)).background(if (solid) col.copy(alpha = 0.22f) else Color.Transparent).clickable { model.open(it2.optString("key")) }.padding(horizontal = 6.dp, vertical = 2.dp),
+                  Modifier.fillMaxWidth().alpha(fadeOf(it2)).clip(RoundedCornerShape(6.dp)).background(if (solid) col.copy(alpha = tintOf(it2, 0.22f)) else Color.Transparent).clickable { model.open(it2.optString("key")) }.padding(horizontal = 6.dp, vertical = 2.dp),
                   verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                  if (!solid) Box(Modifier.size(9.dp).clip(CircleShape).then(if (answer == "invited") Modifier.border(1.5.dp, col, CircleShape) else Modifier.background(col)))
+                  if (!solid) Box(Modifier.size(9.dp).clip(CircleShape).then(if (answer == "invited") Modifier.border(1.5.dp, col, CircleShape) else Modifier.background(col.copy(alpha = if (it2.optBoolean("repeats")) 0.55f else 1f))))
                   Text(
                     buildAnnotatedString {
                       if (it2.optString("time").isNotEmpty()) withStyle(SpanStyle(color = Tokens.text2, fontWeight = FontWeight.Medium)) { append(it2.optString("time") + " ") }
@@ -1003,15 +1020,16 @@ private fun MonthView(model: CalendarModel, s: JSONObject, wide: Boolean) {
 
 /** A `<select>`: the choice in a field, a menu to change it. */
 @Composable
-private fun Select(options: List<Pair<String, String>>, current: String, modifier: Modifier = Modifier, plain: Boolean = false, onPick: (String) -> Unit) {
+private fun Select(options: List<Pair<String, String>>, current: String, modifier: Modifier = Modifier, plain: Boolean = false, small: Boolean = false, onPick: (String) -> Unit) {
   var menu by remember { mutableStateOf(false) }
   Box(modifier) {
     Row(
-      (if (plain) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().height(46.dp).clip(Tokens.field).background(Tokens.surface2).border(1.dp, Tokens.line, Tokens.field).padding(horizontal = 14.dp))
+      // Plain (in a row): only as wide as its text, so the row's name keeps its room.
+      (if (plain) Modifier else Modifier.fillMaxWidth().height(46.dp).clip(Tokens.field).background(Tokens.surface2).border(1.dp, Tokens.line, Tokens.field).padding(horizontal = 14.dp))
         .clickable { menu = true },
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      Text(options.firstOrNull { it.first == current }?.second ?: current, Modifier.weight(1f, fill = !plain), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      Text(options.firstOrNull { it.first == current }?.second ?: current, Modifier.weight(1f, fill = !plain), fontSize = if (small) 13.sp else 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
       Spacer(Modifier.width(6.dp))
       Icon24("chevron", Modifier.rotate(90f), size = 16.dp, tint = Tokens.text2)
     }
@@ -1159,9 +1177,12 @@ private fun LinkedText(parts: List<JSONObject>, modifier: Modifier, small: Boole
 /** A date in a field, picked from a calendar. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DateField(value: String, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
+private fun DateField(value: String, modifier: Modifier = Modifier, plain: Boolean = false, onChange: (String) -> Unit) {
   var picking by remember { mutableStateOf(false) }
-  Box(modifier.fillMaxWidth().height(46.dp).clip(Tokens.field).background(Tokens.surface2).border(1.dp, Tokens.line, Tokens.field).clickable { picking = true }.padding(horizontal = 14.dp), contentAlignment = Alignment.CenterStart) {
+  if (plain) {
+    // In a row of the edit window: just the date, tapped to change it.
+    Text(friendlyDate(value), modifier.clip(RoundedCornerShape(8.dp)).clickable { picking = true }.padding(horizontal = 6.dp, vertical = 8.dp), fontSize = 15.sp, maxLines = 1)
+  } else Box(modifier.fillMaxWidth().height(46.dp).clip(Tokens.field).background(Tokens.surface2).border(1.dp, Tokens.line, Tokens.field).clickable { picking = true }.padding(horizontal = 14.dp), contentAlignment = Alignment.CenterStart) {
     Text(friendlyDate(value), fontSize = 15.sp, maxLines = 1)
   }
   if (picking) {
@@ -1194,67 +1215,74 @@ private fun EventSheet(model: CalendarModel, start: JSONObject) {
   val rep = ed.getJSONObject("repeat")
   val freq = rep.optString("freq")
   val allDay = ed.optBoolean("all_day")
-  WebSheet({ model.editor = null }) {
-    // `.title-field`: big, no box.
-    WebField(ed.optString("title"), { set("title", it) }, placeholder = "New event", minHeight = 56.dp, border = false, textStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold))
-    Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-      Toggle("All-day", allDay) { set("all_day", it) }
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
-        Stack("Starts", Modifier.weight(1f)) { DateField(ed.optString("date")) { ed = JSONObject(moveStart(ed.toString(), it)) } }
-        if (!allDay) Box(Modifier.weight(1f)) { TimeField(ed.optString("start"), { t -> t?.let { set("start", it) } }, Modifier.fillMaxWidth()) }
+  val cals = model.screen.arr("calendars").filter { it.optBoolean("canEdit") || it.optString("id") == ed.optString("calendar") }
+  val cal = cals.firstOrNull { it.optString("id") == ed.optString("calendar") }
+  WebSheet({ model.editor = null }, padding = 22.dp) {
+    // As on the card: the title big and without a box, the calendar under it, then rows with icons.
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      WebField(ed.optString("title"), { set("title", it) }, Modifier.weight(1f), placeholder = "New event", minHeight = 48.dp, border = false, textStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold))
+      IconBtn("close", { model.editor = null }, size = 19.dp)
+    }
+    Row(Modifier.padding(start = 2.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+      Box(Modifier.size(8.dp).clip(CircleShape).background(Colors.of(cal?.optString("color"))))
+      ProvideText(Tokens.text2) { Select(cals.map { it.optString("id") to it.optString("name") }, ed.optString("calendar"), plain = true, small = true) { set("calendar", it) } }
+    }
+    IconRow("clock") {
+      Text("All-day", fontSize = 15.sp, modifier = Modifier.weight(1f))
+      WebSwitch(allDay, { set("all_day", it) })
+    }
+    listOf(Triple("Starts", "date", "start"), Triple("Ends", "end_date", "end")).forEach { (label, dk, tk) ->
+      IconRow(null) {
+        Text(label, fontSize = 15.sp, color = Tokens.text2, modifier = Modifier.weight(1f))
+        DateField(ed.optString(dk), plain = true) { if (dk == "date") ed = JSONObject(moveStart(ed.toString(), it)) else set("end_date", it) }
+        if (!allDay) TimeField(ed.optString(tk), { t -> t?.let { set(tk, it) } }, Modifier.width(76.dp), plain = true)
       }
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
-        Stack("Ends", Modifier.weight(1f)) { DateField(ed.optString("end_date")) { set("end_date", it) } }
-        if (!allDay) Box(Modifier.weight(1f)) { TimeField(ed.optString("end"), { t -> t?.let { set("end", it) } }, Modifier.fillMaxWidth()) }
-      }
-      val freqs = mutableListOf("NONE" to "Never", "DAILY" to "Every day", "WEEKLY" to "Every week", "MONTHLY" to "Every month", "YEARLY" to "Every year")
-      if (rep.has("raw")) freqs += "CUSTOM" to rep.optString("label")
-      Stack("Repeat") { Select(freqs, freq) { setRep("freq", it) } }
-      if (freq == "WEEKLY") {
-        val days = rep.strs("days")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    }
+    val freqs = mutableListOf("NONE" to "Never", "DAILY" to "Every day", "WEEKLY" to "Every week", "MONTHLY" to "Every month", "YEARLY" to "Every year")
+    if (rep.has("raw")) freqs += "CUSTOM" to rep.optString("label")
+    IconRow("repeat") { Select(freqs, freq, plain = true) { setRep("freq", it) }; Spacer(Modifier.weight(1f)) }
+    if (freq == "WEEKLY") {
+      val days = rep.strs("days")
+      IconRow(null) {
+        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween) {
           listOf("MO" to "M", "TU" to "T", "WE" to "W", "TH" to "T", "FR" to "F", "SA" to "S", "SU" to "S").forEach { (code, letter) ->
             val on = code in days
-            Box(Modifier.size(38.dp).clip(CircleShape).background(if (on) MaterialTheme.colorScheme.primary else Tokens.surface2).clickable {
+            Box(Modifier.size(34.dp).clip(CircleShape).background(if (on) MaterialTheme.colorScheme.primary else Tokens.surface2).clickable {
               val next = if (on) days - code else days + code
               if (next.isNotEmpty()) setRep("days", JSONArray(next))
-            }, contentAlignment = Alignment.Center) { Text(letter, color = if (on) Color.White else Tokens.text2, fontWeight = FontWeight.Bold) }
+            }, contentAlignment = Alignment.Center) { Text(letter, color = if (on) Color.White else Tokens.text2, fontWeight = FontWeight.Bold, fontSize = 14.sp) }
           }
         }
       }
-      if (freq != "NONE" && freq != "CUSTOM") {
-        val n = rep.optInt("interval", 1)
-        val unit = (mapOf("DAILY" to "day", "WEEKLY" to "week", "MONTHLY" to "month", "YEARLY" to "year")[freq] ?: "") + if (n > 1) "s" else ""
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-          Stack("Every", Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-              WebField(n.toString(), { v -> v.toIntOrNull()?.let { setRep("interval", it.coerceIn(1, 99)) } }, Modifier.width(90.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-              Text(unit, color = Tokens.text2)
-            }
-          }
-          Stack("Until", Modifier.weight(1f)) { Select(listOf("never" to "Forever", "until" to "A date", "count" to "A number of times"), rep.optString("ends")) { setRep("ends", it) } }
-        }
-        when (rep.optString("ends")) {
-          "until" -> DateField(rep.optString("until")) { setRep("until", it) }
-          "count" -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            WebField(rep.optInt("count", 10).toString(), { v -> v.toIntOrNull()?.let { setRep("count", it.coerceIn(1, 999)) } }, Modifier.width(90.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-            Text("times", color = Tokens.text2)
-          }
-        }
-      }
-      if (!allDay) {
-        val before = model.screen.opt("before").takeIf { it is Number }?.let { (it as Number).toLong() }
-        Stack("Alert") { AlertPick(objects(alertOptions(ed.optString("alert"), before, true)), ed.optString("alert")) { set("alert", it) } }
-      }
-      val cals = model.screen.arr("calendars").filter { it.optBoolean("canEdit") || it.optString("id") == ed.optString("calendar") }
-      Stack("Calendar") { Select(cals.map { it.optString("id") to it.optString("name") }, ed.optString("calendar")) { set("calendar", it) } }
-      WebField(ed.optString("location"), { set("location", it) }, placeholder = "Location")
-      WebField(ed.optString("notes"), { set("notes", it) }, placeholder = "Notes", singleLine = false, minHeight = 90.dp)
     }
-    Row(Modifier.fillMaxWidth().padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-      if (isNew) Btn("Cancel", { model.editor = null }, Modifier.weight(1f), lg = true)
-      else Btn("Delete", { model.delete(ed, null) }, Modifier.weight(1f), kind = BtnKind.Danger, lg = true)
-      Btn(if (isNew) "Add" else "Save", { model.save(ed, null) }, Modifier.weight(1f), kind = BtnKind.Primary, lg = true)
+    if (freq != "NONE" && freq != "CUSTOM") {
+      val n = rep.optInt("interval", 1)
+      val unit = (mapOf("DAILY" to "day", "WEEKLY" to "week", "MONTHLY" to "month", "YEARLY" to "year")[freq] ?: "") + if (n > 1) "s" else ""
+      IconRow(null) {
+        Text("Every", fontSize = 15.sp, color = Tokens.text2)
+        WebField(n.toString(), { v -> v.toIntOrNull()?.let { setRep("interval", it.coerceIn(1, 99)) } }, Modifier.width(52.dp), minHeight = 36.dp, textStyle = TextStyle(fontSize = 15.sp, textAlign = TextAlign.Center), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        Text(unit, fontSize = 15.sp, color = Tokens.text2, modifier = Modifier.weight(1f))
+        Select(listOf("never" to "forever", "until" to "until a date", "count" to "a number of times"), rep.optString("ends"), plain = true) { setRep("ends", it) }
+      }
+      when (rep.optString("ends")) {
+        "until" -> IconRow(null) { Text("Until", fontSize = 15.sp, color = Tokens.text2, modifier = Modifier.weight(1f)); DateField(rep.optString("until"), plain = true) { setRep("until", it) } }
+        "count" -> IconRow(null) {
+          WebField(rep.optInt("count", 10).toString(), { v -> v.toIntOrNull()?.let { setRep("count", it.coerceIn(1, 999)) } }, Modifier.width(60.dp), minHeight = 36.dp, textStyle = TextStyle(fontSize = 15.sp, textAlign = TextAlign.Center), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+          Text("times", fontSize = 15.sp, color = Tokens.text2, modifier = Modifier.weight(1f))
+        }
+      }
+    }
+    if (!allDay) {
+      val before = model.screen.opt("before").takeIf { it is Number }?.let { (it as Number).toLong() }
+      IconRow("bell") { AlertPick(objects(alertOptions(ed.optString("alert"), before, true)), ed.optString("alert"), plain = true) { set("alert", it) }; Spacer(Modifier.weight(1f)) }
+    }
+    IconRow("place") { WebField(ed.optString("location"), { set("location", it) }, Modifier.weight(1f), placeholder = "Location", minHeight = 36.dp, border = false, textStyle = TextStyle(fontSize = 15.sp)) }
+    IconRow("notes", last = true, top = true) { WebField(ed.optString("notes"), { set("notes", it) }, Modifier.weight(1f), placeholder = "Notes", singleLine = false, minHeight = 60.dp, border = false, textStyle = TextStyle(fontSize = 15.sp)) }
+    Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+      if (!isNew) Btn("Delete", { model.delete(ed, null) }, kind = BtnKind.Danger)
+      Spacer(Modifier.weight(1f))
+      if (isNew) Btn("Cancel", { model.editor = null })
+      Btn(if (isNew) "Add" else "Save", { model.save(ed, null) }, kind = BtnKind.Primary)
     }
   }
 }
@@ -1383,20 +1411,25 @@ private fun CalendarSettings(model: CalendarModel, s: JSONObject) {
       VIEWS.forEachIndexed { i, (id, name) ->
         val ticked = id in on
         val can = if (ticked) on.size > 1 else on.size < most
-        SettingsRow(name, first = i == 0) {
+        IconRow(if (i == 0) "calendar" else null, Modifier.clickable(enabled = can) { model.setViews(if (ticked) on - id else on + id) }, last = i == VIEWS.size - 1) {
+          Text(name, fontSize = 15.sp, modifier = Modifier.weight(1f))
           Check(ticked, null, { if (can) model.setViews(if (ticked) on - id else on + id) }, enabled = can || ticked)
         }
       }
     }
-    SettingsGroup("Alerts") {
+    SettingsGroup("Events") {
       val before = s.opt("before").takeIf { it is Number }?.let { (it as Number).toLong() }
       val current = before?.toString() ?: "none"
-      SettingsRow("Default alert") { Box(Modifier.width(190.dp)) { AlertPick(objects(alertOptions(current, before, false)), current) { model.setBefore(it.toLongOrNull()) } } }
-    }
-    SettingsGroup("Your addresses") {
+      IconRow("bell") {
+        Text("Default alert", fontSize = 15.sp, modifier = Modifier.weight(1f))
+        AlertPick(objects(alertOptions(current, before, false)), current, plain = true) { model.setBefore(it.toLongOrNull()) }
+      }
       val emails = s.strs("emails")
-      if (emails.isEmpty()) SettingsRow("No address yet") {}
-      emails.forEachIndexed { i, a -> SettingsRow(a, first = i == 0) { IconBtn("close", { model.forgetAddress(a) }, size = 17.dp) } }
+      IconRow("at", last = emails.isEmpty()) {
+        Text("Your addresses", fontSize = 15.sp, modifier = Modifier.weight(1f))
+        if (emails.isEmpty()) Text("None yet", fontSize = 15.sp, color = Tokens.text3)
+      }
+      emails.forEachIndexed { i, a -> IconRow(null, last = i == emails.size - 1) { Text(a, fontSize = 15.sp, color = Tokens.text2, modifier = Modifier.weight(1f), maxLines = 1); IconBtn("close", { model.forgetAddress(a) }, size = 16.dp) } }
     }
   }
 }

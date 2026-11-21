@@ -275,71 +275,95 @@ struct EventSheet: View {
         let isNew = e.id.isEmpty
         let allDay = e.all_day.bool
         let freq = e["repeat"].freq.str ?? "NONE"
+        let cals = s.calendars.array.filter { $0.canEdit.bool || $0.id == e.calendar.string }
+        let cal = cals.first { $0.id == e.calendar.string }
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                // `.title-field`: big, no box.
-                TextField("New event", text: text("title")).textFieldStyle(.plain)
-                    .font(.system(size: 22, weight: .semibold)).frame(height: 56).padding(.horizontal, 2)
-                    .onSubmit { model.save(e, scope: nil) }
-                Toggle("All-day", isOn: Binding(get: { allDay }, set: { ed["all_day"] = $0 })).font(.system(size: 17))
+            VStack(alignment: .leading, spacing: 0) {
+                // As on the card: the title, big and without a box, then the calendar under it.
+                HStack(alignment: .top, spacing: 4) {
+                    TextField("New event", text: text("title")).textFieldStyle(.plain)
+                        .font(.system(size: 22, weight: .semibold)).tracking(-0.44)
+                        .onSubmit { model.save(e, scope: nil) }
+                    IconButton("close", size: 19, help: "Close") { model.editor = nil }.keyboardShortcut(.cancelAction)
+                }
+                .padding(.top, 2)
+                HStack(spacing: 7) {
+                    Circle().fill(Palette.color(cal?.color.string ?? "blue")).frame(width: 8, height: 8)
+                    PlainMenu(label: cal?.name.string ?? "", items: cals.map { c in (c.name.string, { ed["calendar"] = c.id }) }, color: Look.text2)
+                }
+                .font(.system(size: 13)).padding(.top, 6).padding(.bottom, 8)
+
+                IconRow("clock") {
+                    Text("All-day")
+                    Spacer()
+                    Toggle("", isOn: Binding(get: { allDay }, set: { ed["all_day"] = $0 })).labelsHidden()
+                }
                 ForEach([("Starts", "date", "start"), ("Ends", "end_date", "end")], id: \.0) { label, dk, tk in
-                    HStack(alignment: .bottom, spacing: 10) {
-                        Stack(label) {
-                            DateField(date: e[dk].string) { d in
-                                if dk == "date" {
-                                    // A new start moves the end with it.
-                                    ed = (J(text: moveStart(editor: e.text, date: d)).value as? [String: Any]) ?? ed
-                                } else {
-                                    ed["end_date"] = d
-                                }
-                            }
-                        }
+                    IconRow(nil) {
+                        Text(label).foregroundStyle(Look.text2)
+                        Spacer()
+                        DatePicker("", selection: dayBinding(dk), displayedComponents: .date).labelsHidden().datePickerStyle(.field).fixedSize()
                         if !allDay {
                             TimeField(value: Binding(get: { e[tk].str }, set: { if let t = $0 { ed[tk] = t } }), hour12: model.settings.hour12)
-                                .textFieldStyle(UuobField())
+                                .textFieldStyle(.plain).multilineTextAlignment(.trailing).frame(width: 72)
                         }
                     }
                 }
-                Stack("Repeat") {
+                IconRow("repeat") {
                     let freqs: [(String, String)] = [("NONE", "Never"), ("DAILY", "Every day"), ("WEEKLY", "Every week"), ("MONTHLY", "Every month"), ("YEARLY", "Every year")]
                         + (e["repeat"].raw.str != nil ? [("CUSTOM", e["repeat"].label.string)] : [])
-                    FieldMenu(label: freqs.first { $0.0 == freq }?.1 ?? "Never", items: freqs.map { f in (f.1, { setRep("freq", f.0) }) })
+                    PlainMenu(label: freqs.first { $0.0 == freq }?.1 ?? "Never", items: freqs.map { f in (f.1, { setRep("freq", f.0) }) })
+                    Spacer()
                 }
-                if freq == "WEEKLY" { weekdays }
+                if freq == "WEEKLY" { weekdays.padding(.vertical, 10).overlay(alignment: .bottom) { Rectangle().fill(Look.line).frame(height: 1) } }
                 if freq != "NONE" && freq != "CUSTOM" { repeatDetails(freq) }
                 if !allDay {
                     let current = e.alert.string
-                    Stack("Alert") {
-                        AlertPick(options: J(text: alertOptions(current: current, defaultBefore: s.before.isNull ? nil : s.before.int64, withDefault: true)).array, current: current) { ed["alert"] = $0 }
+                    IconRow("bell") {
+                        AlertPick(options: J(text: alertOptions(current: current, defaultBefore: s.before.isNull ? nil : s.before.int64, withDefault: true)).array, current: current, plain: true) { ed["alert"] = $0 }
+                        Spacer()
                     }
                 }
-                let cals = s.calendars.array.filter { $0.canEdit.bool || $0.id == e.calendar.string }
-                Stack("Calendar") {
-                    FieldMenu(label: cals.first { $0.id == e.calendar.string }?.name.string ?? "", items: cals.map { c in (c.name.string, { ed["calendar"] = c.id }) })
+                IconRow("place") {
+                    TextField("Location", text: text("location")).textFieldStyle(.plain)
                 }
-                TextField("Location", text: text("location"))
-                TextField("Notes", text: text("notes"), axis: .vertical).lineLimit(4...8).padding(.vertical, 12)
+                IconRow("notes", last: true) {
+                    TextField("Notes", text: text("notes"), axis: .vertical).textFieldStyle(.plain).lineLimit(1...8).padding(.vertical, 10)
+                }
                 HStack(spacing: 10) {
-                    if isNew {
-                        Button("Cancel") { model.editor = nil }.keyboardShortcut(.cancelAction)
-                    } else {
-                        Button("Delete", role: .destructive) { model.delete(e, scope: nil) }
+                    if !isNew {
+                        Button("Delete", role: .destructive) { model.delete(e, scope: nil) }.buttonStyle(UuobButton(.danger, small: true))
                     }
-                    Button(isNew ? "Add" : "Save") { model.save(e, scope: nil) }.buttonStyle(UuobButton(.primary, large: true)).keyboardShortcut(.defaultAction)
+                    Spacer()
+                    if isNew { Button("Cancel") { model.editor = nil }.buttonStyle(UuobButton(small: true)) }
+                    Button(isNew ? "Add" : "Save") { model.save(e, scope: nil) }.buttonStyle(UuobButton(.primary, small: true)).keyboardShortcut(.defaultAction)
                 }
-                .environment(\.fillButtons, true)
-                .padding(.top, 8)
+                .padding(.top, 18)
             }
-            .padding(28)
+            .padding(22)
         }
-        .frame(width: 460, height: 640)
+        .frame(width: 460).frame(minHeight: 300, maxHeight: 640)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Look.elevated)
         .foregroundStyle(Look.text)
-        .buttonStyle(UuobButton(large: true))
         .toggleStyle(UuobSwitch())
-        .textFieldStyle(UuobField())
         // "Only this one, or all of them?" over the sheet, as on the web.
         .sheet(isPresented: Binding(get: { model.scopeAsk != nil }, set: { if !$0 { model.scopeAsk = nil } })) { ScopeSheet(model: model) }
+    }
+
+    /// A date in the editor as a picker's Date; a new start moves the end with it.
+    private func dayBinding(_ dk: String) -> Binding<Date> {
+        Binding(
+            get: { ISO8601DateFormatter.day.date(from: e[dk].string) ?? Date() },
+            set: { v in
+                let d = ISO8601DateFormatter.day.string(from: v)
+                if dk == "date" {
+                    ed = (J(text: moveStart(editor: e.text, date: d)).value as? [String: Any]) ?? ed
+                } else {
+                    ed["end_date"] = d
+                }
+            }
+        )
     }
 
     /// `.weekdays`: a round button per day; at least one stays on.
@@ -362,29 +386,36 @@ struct EventSheet: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Every N days/weeks…, until forever, a date or a number of times.
+    /// Every N days/weeks…, until forever, a date or a number of times: one quiet row.
     @ViewBuilder private func repeatDetails(_ freq: String) -> some View {
         let r = e["repeat"]
         let unit = ["DAILY": "days", "WEEKLY": "weeks", "MONTHLY": "months"][freq] ?? "years"
         let ends = r.ends.str ?? "never"
-        HStack(alignment: .bottom, spacing: 10) {
-            Stack("Every") {
-                HStack(spacing: 10) {
-                    TextField("", value: Binding(get: { max(1, r.interval.int) }, set: { setRep("interval", min(99, max(1, $0))) }), format: .number).frame(width: 90)
-                    Text(unit).foregroundStyle(Look.text2)
-                }
-            }
-            Stack("Until") {
-                let choices = [("never", "Forever"), ("until", "A date"), ("count", "A number of times")]
-                FieldMenu(label: choices.first { $0.0 == ends }?.1 ?? "Forever", items: choices.map { c in (c.1, { setRep("ends", c.0) }) })
-            }
+        let choices = [("never", "forever"), ("until", "until a date"), ("count", "a number of times")]
+        IconRow(nil) {
+            Text("Every").foregroundStyle(Look.text2)
+            TextField("", value: Binding(get: { max(1, r.interval.int) }, set: { setRep("interval", min(99, max(1, $0))) }), format: .number)
+                .textFieldStyle(.plain).multilineTextAlignment(.center).frame(width: 34)
+                .padding(.vertical, 3).background(Look.surface2, in: RoundedRectangle(cornerRadius: 7))
+            Text(unit).foregroundStyle(Look.text2)
+            Spacer()
+            PlainMenu(label: choices.first { $0.0 == ends }?.1 ?? "forever", items: choices.map { c in (c.1, { setRep("ends", c.0) }) })
         }
         if ends == "until" {
-            DateField(date: r.until.str ?? e.date.string) { setRep("until", $0) }
+            IconRow(nil) {
+                Text("Until").foregroundStyle(Look.text2)
+                Spacer()
+                DatePicker("", selection: Binding(get: { ISO8601DateFormatter.day.date(from: r.until.str ?? e.date.string) ?? Date() },
+                                                  set: { setRep("until", ISO8601DateFormatter.day.string(from: $0)) }),
+                           displayedComponents: .date).labelsHidden().datePickerStyle(.field).fixedSize()
+            }
         } else if ends == "count" {
-            HStack(spacing: 10) {
-                TextField("", value: Binding(get: { max(1, r.count.int == 0 ? 10 : r.count.int) }, set: { setRep("count", min(999, max(1, $0))) }), format: .number).frame(width: 90)
+            IconRow(nil) {
+                TextField("", value: Binding(get: { max(1, r.count.int == 0 ? 10 : r.count.int) }, set: { setRep("count", min(999, max(1, $0))) }), format: .number)
+                    .textFieldStyle(.plain).multilineTextAlignment(.center).frame(width: 44)
+                    .padding(.vertical, 3).background(Look.surface2, in: RoundedRectangle(cornerRadius: 7))
                 Text("times").foregroundStyle(Look.text2)
+                Spacer()
             }
         }
     }
@@ -561,53 +592,44 @@ struct CalendarSettings: View {
     let s: J
 
     var body: some View {
-        let key = model.narrow ? "narrow" : "wide"
-        let sw = s.switch_[key]
-        let three = sw.three.bool
-        let slots: [(String, String)] = three ? [("small", "Smallest"), ("mid", "Middle"), ("big", "Biggest")] : [("small", "Small"), ("big", "Big")]
+        let on = s.views.array.map(\.id)
         let before: Int64? = s.before.isNull ? nil : s.before.int64
         let current = before.map { String($0) } ?? "none"
         SettingsSheet(app: calendarApp, settings: model.settings, week: true) {
-            Card {
-                Trailing("Third view") {
-                    Segmented([("off", "Off"), ("on", "On")], selected: three ? "on" : "off") { model.setSwitch(["three": $0 == "on"]) }
-                }
-                ForEach(slots, id: \.0) { slot, name in
-                    Trailing(name) {
-                        let others = slots.filter { $0.0 != slot }.map { sw[$0.0].string }
-                        FieldMenu(
-                            label: VIEWS.first { $0.0 == sw[slot].string }?.1 ?? "",
-                            // A view another slot shows can't be chosen twice.
-                            items: VIEWS.filter { !others.contains($0.0) }.map { v in (v.1, { model.setSwitch([slot: v.0]) }) }
-                        )
-                        .frame(width: 170)
+            RowsLabel("Views")
+            // Tick the views the switch on top offers; it shows them shortest first.
+            ForEach(Array(VIEWS.enumerated()), id: \.offset) { i, v in
+                let ticked = on.contains(v.0)
+                let can = ticked ? on.count > 1 : on.count < 6
+                Button {
+                    if can { model.setViews(ticked ? on.filter { $0 != v.0 } : on + [v.0]) }
+                } label: {
+                    IconRow(i == 0 ? "calendar" : nil, last: i == VIEWS.count - 1) {
+                        Text(v.1)
+                        Spacer()
+                        Check(on: ticked, size: 20).opacity(can || ticked ? 1 : 0.4)
                     }
                 }
-            } header: {
-                SectionLabel("Views")
-            } footer: {
-                Text("What the switch on top offers. Phones and computers each keep their own.")
+                .buttonStyle(.plain)
             }
-            Card {
-                Trailing("Default alert") {
-                    AlertPick(options: J(text: alertOptions(current: current, defaultBefore: before, withDefault: false)).array, current: current) { model.setBefore(Int64($0)) }
-                        .frame(width: 220)
-                }
-            } header: {
-                SectionLabel("Alerts")
-            } footer: {
-                Text("For events with a time; each event can have its own, any time before it up to a week. They ring on your phones and computers, as Calendar notifications.")
+            RowsLabel("Events")
+            IconRow("bell") {
+                Text("Default alert")
+                Spacer(minLength: 8)
+                AlertPick(options: J(text: alertOptions(current: current, defaultBefore: before, withDefault: false)).array, current: current, plain: true) { model.setBefore(Int64($0)) }
             }
-            Card {
-                let emails = s.emails.array.map(\.string)
-                if emails.isEmpty { Text("No address yet").foregroundStyle(Look.text2) }
-                ForEach(emails, id: \.self) { a in
-                    Trailing(a) { IconButton("close", size: 16, help: "Remove") { model.forgetAddress(a) } }
+            let emails = s.emails.array.map(\.string)
+            IconRow("at", last: emails.isEmpty) {
+                Text("Your addresses")
+                Spacer()
+                if emails.isEmpty { Text("None yet").foregroundStyle(Look.text3) }
+            }
+            ForEach(Array(emails.enumerated()), id: \.offset) { i, a in
+                IconRow(nil, last: i == emails.count - 1) {
+                    Text(a).foregroundStyle(Look.text2).lineLimit(1)
+                    Spacer()
+                    IconButton("close", size: 15, help: "Remove") { model.forgetAddress(a) }
                 }
-            } header: {
-                SectionLabel("Invitations")
-            } footer: {
-                Text("Your addresses tell which guest is you. They're learned when you import or subscribe to your own Google calendar.")
             }
         }
     }

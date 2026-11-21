@@ -343,8 +343,15 @@ struct DayColumn: View {
     }
 }
 
+/// How strongly an event is tinted with its calendar's colour, by kind: a
+/// meeting to join a little deeper, a repeating one a little lighter.
+func eventTint(_ e: J) -> Double { e.join.bool ? 0.32 : e.repeats.bool ? 0.15 : 0.24 }
+/// Past events fade a little, declined ones more.
+func eventFade(_ e: J) -> Double { e.answer.string == "no" ? 0.45 : e.past.bool ? 0.6 : 1 }
+
 /// `.event`: tinted, a bar of the calendar's colour on the left; an invitation
 /// not answered yet is an outline, "maybe" is striped, "no" is faded and struck through.
+/// Repeating events are lighter, meetings to join deeper with a camera, past ones faded.
 struct EventBlock: View {
     let b: J
     let height: CGFloat
@@ -361,20 +368,25 @@ struct EventBlock: View {
                     .strikethrough(answer == "no").lineLimit(1)
             } else {
                 Text(b.title.string).font(.system(size: 13, weight: .semibold)).strikethrough(answer == "no").lineLimit(max(1, room - 1))
-                Text(b.time.string).font(.system(size: 12)).monospacedDigit().opacity(0.85).lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(b.time.string).font(.system(size: 12)).monospacedDigit()
+                    if b.join.bool { Ico("video", size: 12, stroke: 2) }
+                    if b.repeats.bool { Ico("repeat", size: 10, stroke: 2) }
+                }
+                .opacity(0.85).lineLimit(1)
                 if !place.isEmpty { Text(place).font(.system(size: 12)).opacity(0.85).lineLimit(1) }
             }
         }
         .foregroundStyle(Palette.mix(c, toward: Palette.text, 0.45))
         .padding(.leading, 11).padding(.trailing, 6).padding(.vertical, short ? 2 : 3)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: short ? .leading : .topLeading)
-        .background { BlockFill(color: c, answer: answer) }
-        .overlay(alignment: .leading) { Rectangle().fill(Palette.color(c)).frame(width: 3) }
+        .background { BlockFill(color: c, answer: answer, tint: eventTint(b)) }
+        .overlay(alignment: .leading) { Rectangle().fill(Palette.color(c).opacity(b.repeats.bool ? 0.55 : 1)).frame(width: 3) }
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay {
             if answer == "invited" { RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Palette.color(c).opacity(0.7)) }
         }
-        .opacity(answer == "no" ? 0.45 : 1)
+        .opacity(eventFade(b))
         .contentShape(Rectangle())
     }
 }
@@ -427,11 +439,11 @@ struct AllDayPill: View {
             .padding(.horizontal, 8).padding(.vertical, 3)
             .frame(maxWidth: .infinity, minHeight: 21, alignment: .leading)
             .background {
-                if answer == "invited" || answer == "maybe" { BlockFill(color: c, answer: answer) } else { Palette.color(c).opacity(0.22) }
+                if answer == "invited" || answer == "maybe" { BlockFill(color: c, answer: answer) } else { Palette.color(c).opacity(eventTint(p) - 0.02) }
             }
             .clipShape(shape)
             .overlay { if answer == "invited" { shape.stroke(Palette.color(c).opacity(0.7), lineWidth: 1) } }
-            .opacity(answer == "no" ? 0.45 : 1)
+            .opacity(eventFade(p))
             .padding(.leading, p.continues.bool ? -3 : 0).padding(.trailing, p.goesOn.bool ? -3 : 0)
             .contentShape(Rectangle())
         }
@@ -529,7 +541,7 @@ struct MonthItem: View {
         Button { model.open(it.key.string) } label: {
             HStack(spacing: 6) {
                 if !solid {
-                    Circle().fill(answer == "invited" ? .clear : Palette.color(c)).frame(width: 7, height: 7)
+                    Circle().fill(answer == "invited" ? .clear : Palette.color(c).opacity(it.repeats.bool ? 0.55 : 1)).frame(width: 7, height: 7)
                         .overlay { if answer == "invited" { Circle().strokeBorder(Palette.color(c), lineWidth: 1.5) } }
                 }
                 (it.time.string.isEmpty ? Text("") : Text("\(it.time.string) ").foregroundStyle(Look.text2).fontWeight(.medium))
@@ -539,8 +551,8 @@ struct MonthItem: View {
             .foregroundStyle(solid ? Palette.mix(c, toward: Palette.text, 0.3) : Look.text)
             .padding(.horizontal, 6).padding(.vertical, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(solid ? Palette.color(c).opacity(0.22) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .opacity(answer == "no" ? 0.45 : 1)
+            .background(solid ? Palette.color(c).opacity(eventTint(it) - 0.02) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .opacity(eventFade(it))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
