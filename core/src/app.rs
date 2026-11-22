@@ -144,6 +144,8 @@ pub fn segments(switch: &Json, year_ok: bool) -> Vec<String> {
         list.retain(|v| VIEWS.iter().any(|x| x.0 == v.as_str()) && (year_ok || v != "year"));
         list.sort_by_key(|v| view_order(v));
         list.dedup();
+        // At most four, so the switch stays small (Settings lets no more be ticked).
+        list.truncate(4);
         if !list.is_empty() {
             return list;
         }
@@ -394,7 +396,18 @@ pub fn screen(st: &Json) -> Json {
     let shown: Vec<Json> = events.iter().filter(|e| !hidden.iter().any(|h| Some(h.as_str()) == s(e, "calendar"))).cloned().collect();
     let month = view == "month";
     let is_year = view == "year";
-    let days = if is_year { year_days(&cursor, sunday) } else if month { month_days(&cursor, sunday) } else { days_of(&view, &cursor, sunday) };
+    let mut days = if is_year { year_days(&cursor, sunday) } else if month { month_days(&cursor, sunday) } else { days_of(&view, &cursor, sunday) };
+    // A narrow window shows fewer days than the view has (`fit`: as many as fit),
+    // from the day you are on, rather than columns too thin to read.
+    let mut fitted = Json::Null;
+    if !month && !is_year {
+        if let Some(f) = st.get("fit").and_then(Json::as_i64).map(|f| f.max(1)) {
+            if days.len() as i64 > f {
+                days = days_of(&format!("{f}d"), &cursor, sunday);
+                fitted = json!(f);
+            }
+        }
+    }
     let (from, to) = (days[0].clone(), days[days.len() - 1].clone());
     let inst = expand(&shown, &from, &to);
     let map = by_day(&inst, &from, &to);
@@ -479,7 +492,7 @@ pub fn screen(st: &Json) -> Json {
     let now_minute = zones::hm(Some(&today_wall.time));
     json!({
         "view": view, "views": segs.iter().map(|v| json!({ "id": v, "name": view_label(v) })).collect::<Vec<_>>(),
-        "dayView": day_view, "cursor": cursor, "today": t, "nowMinute": now_minute.0 * 60 + now_minute.1,
+        "dayView": day_view, "fitted": fitted, "cursor": cursor, "today": t, "nowMinute": now_minute.0 * 60 + now_minute.1,
         "title": { "month": MONTHS[(tm - 1) as usize], "year": ty },
         "calendars": cals.iter().map(|c| { let off = hidden.iter().any(|h| Some(h.as_str()) == s(c, "id")); let mut c = c.clone(); c["hidden"] = json!(off); c }).collect::<Vec<_>>(),
         "days": if is_year { json!([]) } else { json!(days) }, "columns": columns, "cells": cells, "monthHeads": heads, "year": year,

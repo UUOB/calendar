@@ -33,7 +33,8 @@ struct CalendarMacApp: App {
     var body: some Scene {
         WindowGroup("Calendar") {
             Gate(uuob: model.uuob, updater: updater) { CalendarView(model: model, updater: updater) }
-                .frame(minWidth: 760, minHeight: 560)
+                // Small windows work too: the calendars fold away and fewer days show.
+                .frame(minWidth: 380, minHeight: 420)
                 .background(Look.bg)
         }
         // No title bar: the sidebar and the calendar are the window, as on the web.
@@ -70,6 +71,10 @@ final class CalendarModel {
     var view = ""
     var cursor = today()
     var narrow = false
+    /// How many days fit side by side in the window (a narrow window shows fewer than the view has).
+    var fit: Int?
+    /// The calendars on the left, opened by hand in a narrow window.
+    var sidebarOpen = false
     var hidden: [String]?
     var showTasks: Bool?
     var views: Any?
@@ -149,6 +154,7 @@ final class CalendarModel {
         st["view"] = view
         st["cursor"] = cursor
         st["narrow"] = narrow
+        if let fit { st["fit"] = fit }
         st["sunday_first"] = settings.sundayFirst
         st["hour12"] = settings.hour12
         st["now"] = now
@@ -225,7 +231,9 @@ final class CalendarModel {
     func show(_ v: String) { view = v }
 
     func move(_ dir: Int64) {
-        cursor = moveCursor(view: screen.view.string, cursor: cursor, dir: dir, sundayFirst: settings.sundayFirst)
+        // As many days as are shown, when the window shows fewer than the view has.
+        let shown = screen.fitted.isNull ? screen.view.string : "\(screen.fitted.int)d"
+        cursor = moveCursor(view: shown, cursor: cursor, dir: dir, sundayFirst: settings.sundayFirst)
     }
 
     func day(_ d: String) {

@@ -9,16 +9,33 @@ struct CalendarView: View {
 
     var body: some View {
         let s = model.screen
-        HStack(spacing: 0) {
-            Sidebar(model: model, updater: updater, s: s).frame(width: 240)
-            Rectangle().fill(Look.line).frame(width: 1)
-            VStack(spacing: 0) {
-                Header(model: model, s: s)
-                if s.view.string == "month" { MonthView(model: model, s: s) } else { WeekView(model: model, s: s) }
+        GeometryReader { geo in
+            let w = geo.size.width
+            // Below 900 points the calendars fold away (the menu button brings them back over the calendar).
+            let docked = w >= 900
+            let pad: CGFloat = w < 640 ? 14 : 28
+            ZStack(alignment: .leading) {
+                HStack(spacing: 0) {
+                    if docked {
+                        Sidebar(model: model, updater: updater, s: s).frame(width: 240)
+                        Rectangle().fill(Look.line).frame(width: 1)
+                    }
+                    VStack(spacing: 0) {
+                        Header(model: model, s: s, compact: w < 640, menu: docked ? nil : { withAnimation(.easeOut(duration: 0.2)) { model.sidebarOpen = true } })
+                        if s.view.string == "month" { MonthView(model: model, s: s) } else { WeekView(model: model, s: s) }
+                    }
+                    .padding(.horizontal, pad).padding(.top, 26)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Look.bg)
+                }
+                if !docked && model.sidebarOpen {
+                    Color.black.opacity(0.25).onTapGesture { withAnimation(.easeOut(duration: 0.2)) { model.sidebarOpen = false } }
+                    Sidebar(model: model, updater: updater, s: s).frame(width: 240).background(Look.rail).shadow(radius: 16)
+                        .transition(.move(edge: .leading))
+                }
             }
-            .padding(.horizontal, 28).padding(.top, 26)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Look.bg)
+            .onAppear { fit(w, docked, pad) }
+            .onChange(of: w) { fit(w, docked, pad) }
         }
         .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(Look.text)
@@ -41,6 +58,17 @@ struct CalendarView: View {
         }
         .sheet(item: $model.importResult) { r in ImportResult(result: r) }
         .sheet(isPresented: $model.settingsOpen) { CalendarSettings(model: model, s: model.screen) }
+    }
+}
+
+extension CalendarView {
+    /// How many days fit: each column at least 96 points wide, after the hours on the left.
+    func fit(_ w: CGFloat, _ docked: Bool, _ pad: CGFloat) {
+        let room = w - (docked ? 241 : 0) - pad * 2 - 56
+        let n = max(1, Int(room / 96))
+        let next = n >= 7 ? nil : n
+        if model.fit != next { model.fit = next }
+        if docked && model.sidebarOpen { model.sidebarOpen = false }
     }
 }
 
@@ -157,24 +185,36 @@ struct CalRow: View {
 struct Header: View {
     @Bindable var model: CalendarModel
     let s: J
+    /// A narrow window: two rows, a smaller title.
+    var compact = false
+    /// Shows the folded-away calendars (nil while they are docked).
+    var menu: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 14) {
-            (Text(s.title.month.string).fontWeight(.bold) + Text(" \(s.title.year.text)").fontWeight(.regular).foregroundStyle(Look.text2))
-                .font(.system(size: 34)).tracking(-0.85).lineLimit(1)
-            Spacer(minLength: 0)
-            Segmented(s.views.array.map { ($0.id, $0.name.string) }, selected: s.view.string) { model.show($0) }
-            HStack(spacing: 2) {
-                IconButton("left", size: 22, help: "Previous") { model.move(-1) }
-                Button("Today") { model.cursor = today() }.buttonStyle(UuobButton(small: true))
-                IconButton("right", size: 22, help: "Next") { model.move(1) }
-            }
-            Button { model.newEventOn(nil) } label: {
-                Ico("plus", size: 20, stroke: 2.2).foregroundStyle(.white).frame(width: 36, height: 36).background(Look.accent, in: Circle())
-            }
-            .buttonStyle(PressStyle()).help("New event")
+        let title = (Text(s.title.month.string).fontWeight(.bold) + Text(" \(s.title.year.text)").fontWeight(.regular).foregroundStyle(Look.text2))
+            .font(.system(size: compact ? 26 : 34)).tracking(-0.85).lineLimit(1).minimumScaleFactor(0.6).layoutPriority(1)
+        let menuButton = Group { if let menu { IconButton("menu", size: 20, help: "Calendars") { menu() } } }
+        let switcher = Segmented(s.views.array.map { ($0.id, $0.name.string) }, selected: s.view.string) { model.show($0) }.fixedSize()
+        let nav = HStack(spacing: 2) {
+            IconButton("left", size: 22, help: "Previous") { model.move(-1) }
+            Button("Today") { model.cursor = today() }.buttonStyle(UuobButton(small: true)).fixedSize()
+            IconButton("right", size: 22, help: "Next") { model.move(1) }
+        }.fixedSize()
+        let new = Button { model.newEventOn(nil) } label: {
+            Ico("plus", size: 20, stroke: 2.2).foregroundStyle(.white).frame(width: 36, height: 36).background(Look.accent, in: Circle())
         }
-        .padding(.bottom, 18)
+        .buttonStyle(PressStyle()).help("New event")
+        Group {
+            if compact {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) { menuButton; title; Spacer(minLength: 0); new }
+                    HStack(spacing: 8) { switcher; Spacer(minLength: 0); nav }
+                }
+            } else {
+                HStack(spacing: 14) { menuButton; title; Spacer(minLength: 0); switcher; nav; new }
+            }
+        }
+        .padding(.bottom, compact ? 12 : 18)
     }
 }
 
@@ -196,12 +236,17 @@ struct WeekView: View {
                     Button {
                         if cols.count > 1 && dayView != s.view.string { model.day(col.date.string) }
                     } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(col.weekday.string.uppercased()).font(.system(size: 13, weight: .medium)).tracking(0.4)
-                                .foregroundStyle(today ? Palette.color("red") : Look.text2)
-                            Text("\(col.day.int)").font(.system(size: 20, weight: .semibold))
-                                .foregroundStyle(today ? .white : Look.text)
-                                .frame(width: 34, height: 34).background(today ? Palette.color("red") : .clear, in: Circle())
+                        // The weekday and the date; just the date when the column is too narrow (never a letter a line).
+                        let number = Text("\(col.day.int)").font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(today ? .white : Look.text)
+                            .frame(width: 34, height: 34).background(today ? Palette.color("red") : .clear, in: Circle())
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(col.weekday.string.uppercased()).font(.system(size: 13, weight: .medium)).tracking(0.4)
+                                    .foregroundStyle(today ? Palette.color("red") : Look.text2).lineLimit(1).fixedSize()
+                                number
+                            }
+                            number
                         }
                         .padding(.top, 6).padding(.bottom, 10)
                         .frame(maxWidth: .infinity).contentShape(Rectangle())
@@ -309,7 +354,7 @@ struct DayColumn: View {
                     let lanes = CGFloat(max(1, b.lanes.double)), lane = CGFloat(b.lane.double)
                     let h = max(22, CGFloat(b.end.double - b.start.double) / 60 * HOUR - 2)
                     let top = CGFloat(b.start.double) / 60 * HOUR + 1
-                    Button { model.open(b.key.string) } label: { EventBlock(b: b, height: h) }
+                    Button { model.open(b.key.string) } label: { EventBlock(b: b, height: h, width: max(8, w / lanes - 4)) }
                         .buttonStyle(PressStyle())
                         .frame(width: max(8, w / lanes - 4), height: h)
                         .offset(x: lane / lanes * w + 2, y: top)
@@ -355,11 +400,13 @@ func eventFade(_ e: J) -> Double { e.answer.string == "no" ? 0.45 : e.past.bool 
 struct EventBlock: View {
     let b: J
     let height: CGFloat
+    var width: CGFloat = 200
 
     var body: some View {
         let c = b.color.string
         let answer = b.answer.string
-        let short = height < 38
+        // A thin block shows one line of its title, cut short, never a letter a line.
+        let short = height < 38 || width < 64
         let place = height >= 76 ? b.place.string : ""
         let room = max(1, Int((height - 5 - (place.isEmpty ? 0 : 15)) / 15))
         VStack(alignment: .leading, spacing: 1) {
@@ -478,7 +525,12 @@ struct MonthView: View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 ForEach(Array(s.monthHeads.array.enumerated()), id: \.offset) { _, h in
-                    Text(h.string.uppercased()).font(.system(size: 13, weight: .semibold)).tracking(0.4).foregroundStyle(Look.text2)
+                    // "MON", or "M" when the cells are narrow.
+                    ViewThatFits(in: .horizontal) {
+                        Text(h.string.uppercased()).lineLimit(1).fixedSize()
+                        Text(String(h.string.prefix(1)).uppercased()).lineLimit(1).fixedSize()
+                    }
+                    .font(.system(size: 13, weight: .semibold)).tracking(0.4).foregroundStyle(Look.text2)
                         .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 10).padding(.bottom, 8)
                 }
             }
@@ -514,7 +566,7 @@ struct MonthCell: View {
                 .buttonStyle(.plain)
             }
             ForEach(c.items.array, id: \.keyId) { it in MonthItem(model: model, it: it) }
-            if c.more.int > 0 { Text("+\(c.more.int) more").font(.system(size: 11)).foregroundStyle(Look.text2).padding(.horizontal, 6) }
+            if c.more.int > 0 { Text("+\(c.more.int) more").lineLimit(1).font(.system(size: 11)).foregroundStyle(Look.text2).padding(.horizontal, 6) }
             ForEach(c.tasks.array, id: \.titleId) { t in TaskMark(title: t.title.string) }
             Spacer(minLength: 0)
         }

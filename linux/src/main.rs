@@ -1499,7 +1499,8 @@ impl Calendar {
         let mut view_rows = vec![];
         for (i, (id, name)) in names.iter().enumerate() {
             let ticked = on.iter().any(|v| v == id);
-            let can = if ticked { on.len() > 1 } else { on.len() < 6 };
+            // At most four: the switch stays small.
+            let can = if ticked { on.len() > 1 } else { on.len() < 4 };
             let check = gtk::CheckButton::builder().active(ticked).sensitive(can || ticked).css_classes(["round-check"]).build();
             let (tx, k, id, list) = (sender.clone(), key.to_string(), id.to_string(), on.clone());
             check.connect_toggled(move |c| {

@@ -647,7 +647,7 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean) {
   }
   val vs = s.arr("views")
   val switch = @Composable { mod: Modifier, fill: Boolean ->
-    Segmented(vs.map { it.optString("name") }, vs.indexOfFirst { it.optString("id") == s.optString("view") }, mod, fill) { model.show(vs[it].optString("id")) }
+    Segmented(vs.map { it.optString("name") }, vs.indexOfFirst { it.optString("id") == s.optString("view") }, mod, compact = fill) { model.show(vs[it].optString("id")) }
   }
   val todayPill = @Composable {
     Box(Modifier.height(32.dp).clip(Pill.shape).background(Tokens.surface2).clickable { model.cursor = today() }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
@@ -675,10 +675,11 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean) {
   } else {
     Column(Modifier.padding(bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { titleText(Modifier.weight(1f)); todayPill(); new() }
-      // Phones: the views share the row evenly, so all of them fit, with the arrows at its end.
+      // Phones: a compact switch (at most four views), the arrows at the row's end.
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         IconBtn("menu", { model.calsOpen = true })
-        switch(Modifier.weight(1f), true)
+        switch(Modifier, true)
+        Spacer(Modifier.weight(1f))
         IconBtn("left", { model.move(-1) })
         IconBtn("right", { model.move(1) })
       }
@@ -1407,7 +1408,8 @@ private fun CalendarSettings(model: CalendarModel, s: JSONObject) {
   SettingsSheet(onClose = { model.settingsOpen = false }, week = true) {
     SettingsGroup("Views") {
       val on = s.arr("views").map { it.optString("id") }
-      val most = if (model.narrow) 5 else 7
+      // At most four: the switch stays small.
+      val most = 4
       VIEWS.forEachIndexed { i, (id, name) ->
         val ticked = id in on
         val can = if (ticked) on.size > 1 else on.size < most

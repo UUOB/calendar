@@ -600,7 +600,8 @@ struct CalendarSettings: View {
             // Tick the views the switch on top offers; it shows them shortest first.
             ForEach(Array(VIEWS.enumerated()), id: \.offset) { i, v in
                 let ticked = on.contains(v.0)
-                let can = ticked ? on.count > 1 : on.count < 6
+                // At most four: the switch stays small.
+                let can = ticked ? on.count > 1 : on.count < 4
                 Button {
                     if can { model.setViews(ticked ? on.filter { $0 != v.0 } : on + [v.0]) }
                 } label: {

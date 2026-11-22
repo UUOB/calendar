@@ -161,3 +161,15 @@ fn planned_time_of_a_day() {
     assert_eq!(days.len() % 7, 0);
     assert!(days.first().unwrap().as_str() <= "2026-01-01" && days.last().unwrap().as_str() >= "2026-12-31");
 }
+
+#[test]
+fn a_narrow_window_shows_fewer_days() {
+    use serde_json::json;
+    let mut st = state();
+    st["fit"] = json!(3);
+    let sc = screen(&st);
+    assert_eq!(sc["days"], json!(["2026-11-19", "2026-11-20", "2026-11-21"]));
+    assert_eq!(sc["fitted"], json!(3));
+    st["fit"] = json!(9);
+    assert!(screen(&st)["fitted"].is_null());
+}
