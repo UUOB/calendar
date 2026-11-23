@@ -954,7 +954,7 @@ impl Calendar {
             return;
         }
         // The kit's detail card: the title with Edit and ✕, then the lines and rows.
-        let edit = uuob_kit_gtk::icon_btn("edit", 19, "Edit");
+        let edit = uuob_kit_gtk::icon_btn("edit", 19, "Edit (Ctrl+E)");
         let actions: Vec<gtk::Widget> = if c["canEdit"] == json!(true) { vec![edit.clone().upcast()] } else { vec![] };
         let (d, col) = uuob_kit_gtk::detail_sheet(s(&c, "title"), &actions);
         col.set_spacing(8);
@@ -1042,6 +1042,19 @@ impl Calendar {
                 dd.close();
                 tx.input(Msg::Edit(key.clone()));
             });
+        }
+        // Ctrl+E edits, as the pencil's tooltip says (only where it may be edited).
+        if c["canEdit"] == json!(true) {
+            let keys = gtk::ShortcutController::new();
+            let e = edit.clone();
+            keys.add_shortcut(gtk::Shortcut::new(
+                gtk::ShortcutTrigger::parse_string("<Control>e"),
+                Some(gtk::CallbackAction::new(move |_, _| {
+                    e.emit_clicked();
+                    glib::Propagation::Stop
+                })),
+            ));
+            d.add_controller(keys);
         }
         d.present(Some(root));
     }

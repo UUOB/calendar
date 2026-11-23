@@ -1,5 +1,7 @@
 package app.uuob.calendar
 
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -119,6 +121,7 @@ import app.uuob.calendar.core.upcomingList
 import app.uuob.calendar.core.refresh as refreshLink
 import app.uuob.client.friendlyDate
 import app.uuob.client.today
+import app.uuob.kit.LocalDrawerMode
 import app.uuob.kit.Btn
 import app.uuob.kit.BtnKind
 import app.uuob.kit.Check
@@ -533,8 +536,8 @@ fun CalendarScreen(model: CalendarModel, updater: Updater) {
   BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     val wide = maxWidth >= 720.dp
     LaunchedEffect(wide) { model.narrow = !wide }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(start = if (wide) 28.dp else 12.dp, end = if (wide) 28.dp else 12.dp, top = if (wide) 26.dp else 18.dp)) {
-      Header(model, s, wide)
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(start = if (wide) 28.dp else 12.dp, end = if (wide) 28.dp else 12.dp, top = if (wide) 26.dp else 12.dp)) {
+      Header(model, s, wide, phone = LocalDrawerMode.current)
       when (s.optString("view")) {
         "month" -> MonthView(model, s, wide)
         "year" -> YearView(model, s, wide)
@@ -665,7 +668,7 @@ private fun Sidebar(model: CalendarModel, s: JSONObject, updater: Updater, files
 }
 
 @Composable
-private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean) {
+private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean, phone: Boolean) {
   val title = s.getJSONObject("title")
   val titleText = @Composable { mod: Modifier ->
     Text(
@@ -698,7 +701,7 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean) {
     }
   }
   val new = @Composable {
-    Box(Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable { model.newEventOn(null) }, contentAlignment = Alignment.Center) {
+    Box(Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable { model.newEventOn(null) }.semantics { contentDescription = "New event" }, contentAlignment = Alignment.Center) {
       Icon24("plus", size = 20.dp, stroke = 2.2f, tint = Color.White)
     }
   }
@@ -708,10 +711,13 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean) {
     }
   } else {
     Column(Modifier.padding(bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { titleText(Modifier.weight(1f)); todayPill(); new() }
-      // Phones: a compact switch (at most four views), the arrows at the row's end.
+      // The menu (the calendars' drawer) before the title on phones, as in every app's toolbar.
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (phone) IconBtn("menu", { model.calsOpen = true }, description = "Calendars")
+        titleText(Modifier.weight(1f)); todayPill(); new()
+      }
+      // A compact switch (at most four views), the arrows at the row's end.
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        IconBtn("menu", { model.calsOpen = true })
         switch(Modifier, true)
         Spacer(Modifier.weight(1f))
         IconBtn("left", { model.move(-1) })
