@@ -9,34 +9,33 @@ struct CalendarView: View {
 
     var body: some View {
         let s = model.screen
-        GeometryReader { geo in
-            let w = geo.size.width
-            // Below 900 points the calendars fold away (the menu button brings them back over the calendar).
-            let docked = w >= 900
-            let pad: CGFloat = w < 640 ? 14 : 28
-            ZStack(alignment: .leading) {
-                HStack(spacing: 0) {
-                    if docked {
-                        Sidebar(model: model, updater: updater, s: s).frame(width: 240)
-                        Rectangle().fill(Look.line).frame(width: 1)
-                    }
-                    VStack(spacing: 0) {
-                        Header(model: model, s: s, compact: w < 640, menu: docked ? nil : { withAnimation(.easeOut(duration: 0.2)) { model.sidebarOpen = true } })
-                        if s.view.string == "month" { MonthView(model: model, s: s) } else { WeekView(model: model, s: s) }
-                    }
-                    .padding(.horizontal, pad).padding(.top, 26)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Look.bg)
+        // The calendars on the left (a rail of their colours when folded or narrow), the calendar on the right.
+        SidebarScaffold {
+            Sidebar(model: model, updater: updater, s: s)
+        } rail: {
+            CalendarRail(model: model, updater: updater, s: s)
+        } content: {
+            GeometryReader { geo in
+                let w = geo.size.width
+                let pad: CGFloat = w < 640 ? 14 : 28
+                VStack(spacing: 0) {
+                    Header(model: model, s: s, compact: w < 640)
+                    if s.view.string == "month" { MonthView(model: model, s: s) } else { WeekView(model: model, s: s) }
                 }
-                if !docked && model.sidebarOpen {
-                    Color.black.opacity(0.25).onTapGesture { withAnimation(.easeOut(duration: 0.2)) { model.sidebarOpen = false } }
-                    Sidebar(model: model, updater: updater, s: s).frame(width: 240).background(Look.rail).shadow(radius: 16)
-                        .transition(.move(edge: .leading))
-                }
+                .padding(.horizontal, pad).padding(.top, 26)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Look.bg)
+                .onAppear { fit(w, pad) }
+                .onChange(of: w) { fit(w, pad) }
+                // ← → and T move through days without a modifier, when no field has the keys.
+                .focusable().focusEffectDisabled()
+                .onKeyPress(.leftArrow) { model.move(-1); return .handled }
+                .onKeyPress(.rightArrow) { model.move(1); return .handled }
+                .onKeyPress("t") { model.cursor = today(); return .handled }
             }
-            .onAppear { fit(w, docked, pad) }
-            .onChange(of: w) { fit(w, docked, pad) }
         }
+        // ⌘K, ⌘?, and C / ? where no field is typing (docs/design.md).
+        .uuobKeys(CalendarMacApp.commands(model))
         .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(Look.text)
         .overlay(alignment: .bottom) { Toast(text: model.busy.isEmpty ? model.note : model.busy) }
@@ -62,13 +61,42 @@ struct CalendarView: View {
 }
 
 extension CalendarView {
-    /// How many days fit: each column at least 96 points wide, after the hours on the left.
-    func fit(_ w: CGFloat, _ docked: Bool, _ pad: CGFloat) {
-        let room = w - (docked ? 241 : 0) - pad * 2 - 56
-        let n = max(1, Int(room / 96))
+    /// How many days fit in the calendar's width `w`: each column at least 96 points, after the hours on the left.
+    func fit(_ w: CGFloat, _ pad: CGFloat) {
+        let n = max(1, Int((w - pad * 2 - 56) / 96))
         let next = n >= 7 ? nil : n
         if model.fit != next { model.fit = next }
-        if docked && model.sidebarOpen { model.sidebarOpen = false }
+    }
+}
+
+/// The folded sidebar: a + for a new calendar, each calendar as its colour
+/// (tap to show or hide it), tasks, and Settings at the bottom.
+struct CalendarRail: View {
+    @Bindable var model: CalendarModel
+    @Bindable var updater: Updater
+    let s: J
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Color.clear.frame(height: 30) // the window's buttons
+            RailButton("plus", help: "New calendar") {
+                model.calSheet = J(["name": "", "color": Palette.names[(s.calendars.array.count + 1) % Palette.names.count]])
+            }
+            Rectangle().fill(Look.line).frame(width: 28, height: 1).padding(.vertical, 4)
+            ForEach(s.calendars.array) { c in
+                RailButton(help: "\(c.hidden.bool ? "Show" : "Hide") \(c.name.string)") {
+                    Circle().fill(c.hidden.bool ? Color.clear : Palette.color(c.color.string))
+                        .overlay(Circle().strokeBorder(Palette.color(c.color.string), lineWidth: 2))
+                        .frame(width: 16, height: 16)
+                } action: { model.toggleCal(c.id) }
+            }
+            RailButton(help: s.showTasks.bool ? "Hide tasks" : "Show tasks", selected: s.showTasks.bool) {
+                Ico("tasks", size: 19)
+            } action: { model.toggleTasks() }
+            Spacer()
+            RailButton("settings", help: "Settings (⌘,)") { model.settingsOpen = true }
+        }
+        .padding(.top, 4)
     }
 }
 
@@ -140,20 +168,16 @@ struct Sidebar: View {
                     if !s.showTasks.bool { Ico("lock", size: 14).foregroundStyle(Look.text3) }
                 }
                 .padding(.horizontal, 8).padding(.vertical, 7)
-                if !s.showTasks.bool {
-                    Text("Asks to read your Tasks data.").font(.system(size: 13)).foregroundStyle(Look.text2).padding(.horizontal, 8).padding(.top, 4)
-                }
             }
             .padding(.horizontal, 16).padding(.top, 20)
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Button { model.settingsOpen = true } label: { IconLabel("settings", "Settings") }.buttonStyle(UuobButton(.quiet))
+                Button { model.settingsOpen = true } label: { IconLabel("settings", "Settings") }.buttonStyle(UuobButton(.quiet)).help("Settings (⌘,)")
                 Spacer()
             }
-            .padding(.horizontal, 16).padding(.bottom, 18)
+            .padding(.horizontal, 16).padding(.bottom, 4)
         }
-        .background(Look.elevated)
     }
 }
 

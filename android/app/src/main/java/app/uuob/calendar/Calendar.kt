@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -122,6 +123,13 @@ import app.uuob.kit.Btn
 import app.uuob.kit.BtnKind
 import app.uuob.kit.Check
 import app.uuob.kit.IconRow
+import app.uuob.kit.DetailSheet
+import app.uuob.kit.EditSheet
+import app.uuob.kit.RailButton
+import app.uuob.kit.RailIcon
+import app.uuob.kit.Shortcuts
+import app.uuob.kit.ShortcutsHost
+import app.uuob.kit.SidebarScaffold
 import app.uuob.kit.ProvideText
 import app.uuob.kit.WebSwitch
 import app.uuob.kit.NumberWheel
@@ -276,6 +284,12 @@ class CalendarModel(private val ctx: Context) {
       delay(1500)
       client.upcoming(upcomingList(state().toString()))
     }
+  }
+
+  /** A new calendar, in the next colour. */
+  fun newCalendar() {
+    val n = screen.arr("calendars").size
+    calSheet = JSONObject().put("name", "").put("color", COLORS[(n + 1) % COLORS.size])
   }
 
   fun launch(work: suspend () -> Unit) {
@@ -511,23 +525,20 @@ fun CalendarScreen(model: CalendarModel, updater: Updater) {
   val saveFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/calendar")) { uri -> val id = exportId; if (uri != null && id != null) model.exportTo(uri, id) }
   val files = { pickFiles.launch(arrayOf("text/calendar", "text/plain", "application/octet-stream")) }
 
+  // The calendars: a drawer on phones, the sidebar (or a rail of their colours) on tablets.
+  ShortcutsHost(calendarShortcuts(model, files)) {
+  SidebarScaffold(model.calsOpen, { model.calsOpen = it }, sidebar = {
+    Sidebar(model, s, updater, files, Modifier.weight(1f))
+  }, rail = { CalendarRail(model, s) }) {
   BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     val wide = maxWidth >= 720.dp
     LaunchedEffect(wide) { model.narrow = !wide }
-    Row(Modifier.fillMaxSize()) {
-      if (wide) {
-        Column(Modifier.width(240.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surface).safeDrawingPadding().padding(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 18.dp)) {
-          Sidebar(model, s, updater, files, Modifier.weight(1f))
-        }
-        Box(Modifier.width(1.dp).fillMaxHeight().background(Tokens.line))
-      }
-      Column(Modifier.weight(1f).fillMaxHeight().safeDrawingPadding().padding(start = if (wide) 28.dp else 12.dp, end = if (wide) 28.dp else 12.dp, top = if (wide) 26.dp else 18.dp)) {
-        Header(model, s, wide)
-        when (s.optString("view")) {
-          "month" -> MonthView(model, s, wide)
-          "year" -> YearView(model, s, wide)
-          else -> WeekView(model, s)
-        }
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(start = if (wide) 28.dp else 12.dp, end = if (wide) 28.dp else 12.dp, top = if (wide) 26.dp else 18.dp)) {
+      Header(model, s, wide)
+      when (s.optString("view")) {
+        "month" -> MonthView(model, s, wide)
+        "year" -> YearView(model, s, wide)
+        else -> WeekView(model, s)
       }
     }
     if (model.note.isNotEmpty() || model.busy.isNotEmpty()) {
@@ -538,17 +549,8 @@ fun CalendarScreen(model: CalendarModel, updater: Updater) {
       )
       LaunchedEffect(model.note) { if (model.note.isNotEmpty()) { delay(4000); model.note = "" } }
     }
-    // Phones: the calendar list rises from the bottom.
-    AnimatedVisibility(model.calsOpen && !wide, enter = fadeIn(), exit = fadeOut()) {
-      Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)).clickable(remember { MutableInteractionSource() }, null) { model.calsOpen = false })
-    }
-    AnimatedVisibility(model.calsOpen && !wide, Modifier.align(Alignment.BottomCenter), enter = slideInVertically { it }, exit = slideOutVertically { it }) {
-      Column(
-        Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.75f).shadow(24.dp, RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
-          .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)).background(MaterialTheme.colorScheme.surface)
-          .clickable(remember { MutableInteractionSource() }, null) {}.navigationBarsPadding().padding(horizontal = 16.dp, vertical = 26.dp),
-      ) { Sidebar(model, s, updater, files, Modifier) }
-    }
+  }
+  }
   }
   model.card?.let { CardSheet(model, it) }
   model.editor?.let { if (model.scopeAsk == null) EventSheet(model, it) }
@@ -586,6 +588,38 @@ private fun MenuItem(icon: String, text: String, onClick: () -> Unit) {
     Text(text, fontSize = 15.sp, fontWeight = FontWeight.Medium)
   }
 }
+
+/** The folded sidebar on a tablet: a + for a new calendar, each calendar as its colour (tap to show or hide), tasks, Settings. */
+@Composable
+private fun ColumnScope.CalendarRail(model: CalendarModel, s: JSONObject) {
+  RailIcon("plus", "New calendar") { model.newCalendar() }
+  Box(Modifier.padding(vertical = 6.dp).width(28.dp).height(1.dp).background(Tokens.line))
+  s.arr("calendars").forEach { c ->
+    val col = Colors.of(c.optString("color"))
+    val on = !c.optBoolean("hidden")
+    RailButton((if (on) "Hide " else "Show ") + c.optString("name"), onClick = { model.toggleCal(c.optString("id")) }) {
+      Box(Modifier.size(16.dp).clip(CircleShape).border(2.dp, col, CircleShape).background(if (on) col else Color.Transparent))
+    }
+  }
+  RailIcon("tasks", if (s.optBoolean("showTasks")) "Hide tasks" else "Show tasks", s.optBoolean("showTasks")) { model.toggleTasks() }
+  Spacer(Modifier.weight(1f))
+  RailIcon("settings", "Settings") { model.settingsOpen = true }
+}
+
+/** The shared shortcuts with a keyboard (docs/design.md) and Calendar's own. */
+private fun calendarShortcuts(model: CalendarModel, files: () -> Unit) = Shortcuts(
+  settings = { model.settingsOpen = true },
+  new = "New event" to { model.newEventOn(null) },
+  refresh = { model.launch { model.reload() } },
+  extra = listOf(
+    Shortcuts.Extra("Today", "T", androidx.compose.ui.input.key.Key.T, false) { model.cursor = today() },
+    Shortcuts.Extra("Previous", "←", androidx.compose.ui.input.key.Key.DirectionLeft, false) { model.move(-1) },
+    Shortcuts.Extra("Next", "→", androidx.compose.ui.input.key.Key.DirectionRight, false) { model.move(1) },
+    Shortcuts.Extra("Import a file", "Ctrl+O", androidx.compose.ui.input.key.Key.O, true) { files() },
+  ) + listOf(androidx.compose.ui.input.key.Key.One, androidx.compose.ui.input.key.Key.Two, androidx.compose.ui.input.key.Key.Three, androidx.compose.ui.input.key.Key.Four).mapIndexed { i, k ->
+    Shortcuts.Extra("View ${i + 1}", "Ctrl+${i + 1}", k, true) { model.screen.arr("views").getOrNull(i)?.let { model.show(it.optString("id")) } }
+  },
+)
 
 @Composable
 private fun Sidebar(model: CalendarModel, s: JSONObject, updater: Updater, files: () -> Unit, modifier: Modifier) {
@@ -1084,12 +1118,10 @@ private fun CardSheet(model: CalendarModel, c: JSONObject) {
   val uri = LocalUriHandler.current
   var peopleOpen by remember(c.optString("answerKey")) { mutableStateOf(false) }
   var joiningOpen by remember(c.optString("answerKey")) { mutableStateOf(false) }
-  WebSheet({ model.card = null }, padding = 22.dp) {
-    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-      Text(c.optString("title"), fontSize = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp, modifier = Modifier.weight(1f).padding(top = 4.dp, end = 6.dp))
-      if (c.optBoolean("canEdit")) IconBtn("edit", { model.edit(c.getJSONObject("event").optString("key")) }, size = 19.dp)
-      IconBtn("close", { model.card = null }, size = 19.dp)
-    }
+  // The kit's detail card: the title with Edit and ✕, then the lines and rows.
+  DetailSheet(c.optString("title"), { model.card = null }, actions = {
+    if (c.optBoolean("canEdit")) IconBtn("edit", { model.edit(c.getJSONObject("event").optString("key")) }, size = 19.dp, description = "Edit")
+  }) {
     Text(c.optString("when"), fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
     c.text("repeat")?.let { Text(it, fontSize = 13.sp, color = Tokens.text2, modifier = Modifier.padding(top = 2.dp)) }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
@@ -1218,16 +1250,15 @@ private fun EventSheet(model: CalendarModel, start: JSONObject) {
   val allDay = ed.optBoolean("all_day")
   val cals = model.screen.arr("calendars").filter { it.optBoolean("canEdit") || it.optString("id") == ed.optString("calendar") }
   val cal = cals.firstOrNull { it.optString("id") == ed.optString("calendar") }
-  WebSheet({ model.editor = null }, padding = 22.dp) {
-    // As on the card: the title big and without a box, the calendar under it, then rows with icons.
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      WebField(ed.optString("title"), { set("title", it) }, Modifier.weight(1f), placeholder = "New event", minHeight = 48.dp, border = false, textStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold))
-      IconBtn("close", { model.editor = null }, size = 19.dp)
-    }
-    Row(Modifier.padding(start = 2.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+  // The kit's editor: the title big and editable with ✕, the calendar under it, then rows with icons.
+  EditSheet(
+    ed.optString("title"), { set("title", it) }, placeholder = "New event", isNew = isNew,
+    onCancel = { model.editor = null }, onSave = { model.save(ed, null) }, onDelete = { model.delete(ed, null) },
+    under = {
       Box(Modifier.size(8.dp).clip(CircleShape).background(Colors.of(cal?.optString("color"))))
       ProvideText(Tokens.text2) { Select(cals.map { it.optString("id") to it.optString("name") }, ed.optString("calendar"), plain = true, small = true) { set("calendar", it) } }
-    }
+    },
+  ) {
     IconRow("clock") {
       Text("All-day", fontSize = 15.sp, modifier = Modifier.weight(1f))
       WebSwitch(allDay, { set("all_day", it) })
@@ -1279,12 +1310,6 @@ private fun EventSheet(model: CalendarModel, start: JSONObject) {
     }
     IconRow("place") { WebField(ed.optString("location"), { set("location", it) }, Modifier.weight(1f), placeholder = "Location", minHeight = 36.dp, border = false, textStyle = TextStyle(fontSize = 15.sp)) }
     IconRow("notes", last = true, top = true) { WebField(ed.optString("notes"), { set("notes", it) }, Modifier.weight(1f), placeholder = "Notes", singleLine = false, minHeight = 60.dp, border = false, textStyle = TextStyle(fontSize = 15.sp)) }
-    Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-      if (!isNew) Btn("Delete", { model.delete(ed, null) }, kind = BtnKind.Danger)
-      Spacer(Modifier.weight(1f))
-      if (isNew) Btn("Cancel", { model.editor = null })
-      Btn(if (isNew) "Add" else "Save", { model.save(ed, null) }, kind = BtnKind.Primary)
-    }
   }
 }
 

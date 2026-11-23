@@ -40,12 +40,30 @@ struct CalendarMacApp: App {
         // No title bar: the sidebar and the calendar are the window, as on the web.
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1200, height: 800)
-        .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Event") { model.newEventOn(nil) }.keyboardShortcut("n")
-                Button("Import a File…") { model.pickFiles() }.keyboardShortcut("o")
-            }
+        .commands { Self.commands(model) }
+    }
+
+    /// Every shortcut, for the list (⌘?).
+    @MainActor static func shortcutRows(_ model: CalendarModel) -> [(String, String)] { commands(model).all }
+
+    /// The shared shortcuts (docs/design.md) and Calendar's own.
+    @MainActor static func commands(_ model: CalendarModel) -> UuobCommands {
+        let views = model.screen.views.array
+        var extra: [Shortcut] = [
+            Shortcut(title: "Today", key: "t") { model.cursor = today() },
+            Shortcut(title: "Previous", key: .leftArrow) { model.move(-1) },
+            Shortcut(title: "Next", key: .rightArrow) { model.move(1) },
+            Shortcut(title: "Import a File…", key: "o") { model.pickFiles() },
+        ]
+        for (i, v) in views.prefix(4).enumerated() {
+            extra.append(Shortcut(title: v.name.string, key: KeyEquivalent(Character("\(i + 1)"))) { model.show(v.id) })
         }
+        return UuobCommands(
+            settings: { model.settingsOpen = true },
+            new: { model.newEventOn(nil) }, newTitle: "New Event",
+            refresh: { Task { await model.reload() } },
+            extraMenu: "Go", extra: extra
+        )
     }
 }
 

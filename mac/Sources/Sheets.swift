@@ -110,14 +110,10 @@ struct CardSheet: View {
     var body: some View {
         let key = c.key.string
         let akey = c.answerKey.string
-        ScrollView {
+        DetailSheet(title: c.title.string, onClose: { dismiss() }) {
+            if c.canEdit.bool { IconButton("edit", size: 19, help: "Edit (⌘E)") { dismiss(); model.edit(key) }.keyboardShortcut("e") }
+        } content: {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 4) {
-                    Text(c.title.string).font(.system(size: 22, weight: .semibold)).tracking(-0.44)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
-                    if c.canEdit.bool { IconButton("edit", size: 19, help: "Edit") { dismiss(); model.edit(key) } }
-                    IconButton("close", size: 19, help: "Close") { dismiss() }.keyboardShortcut(.cancelAction)
-                }
                 Text(c.when.string).font(.system(size: 16, weight: .medium)).padding(.top, 10).padding(.bottom, 2)
                 if let r = c["repeat"].str { Text(r).font(.system(size: 13)).foregroundStyle(Look.text2).padding(.top, 2) }
                 HStack(spacing: 7) {
@@ -186,17 +182,11 @@ struct CardSheet: View {
                 if c.asksAnswer.bool {
                     VStack(spacing: 8) {
                         Segmented([("yes", "Going"), ("maybe", "Maybe"), ("no", "No")], selected: c.answer.string) { model.answer(akey, $0) }
-                        Text("Your answer stays on your devices.").font(.system(size: 13)).foregroundStyle(Look.text2)
                     }
                     .frame(maxWidth: .infinity).padding(.top, 16)
                 }
             }
-            .padding(22)
         }
-        .frame(width: 460).frame(minHeight: 200, maxHeight: 640)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(Look.elevated)
-        .foregroundStyle(Look.text)
     }
 
     /// `.row`: an icon and a line, a hairline under it.
@@ -277,22 +267,16 @@ struct EventSheet: View {
         let freq = e["repeat"].freq.str ?? "NONE"
         let cals = s.calendars.array.filter { $0.canEdit.bool || $0.id == e.calendar.string }
         let cal = cals.first { $0.id == e.calendar.string }
-        ScrollView {
+        EditSheet(placeholder: "New event", title: text("title"), isNew: isNew,
+                  onCancel: { model.editor = nil }, onSave: { model.save(e, scope: nil) }, onDelete: { model.delete(e, scope: nil) }) {
+            // As on the card: the calendar under the title.
+            HStack(spacing: 7) {
+                Circle().fill(Palette.color(cal?.color.string ?? "blue")).frame(width: 8, height: 8)
+                PlainMenu(label: cal?.name.string ?? "", items: cals.map { c in (c.name.string, { ed["calendar"] = c.id }) }, color: Look.text2)
+            }
+            .font(.system(size: 13))
+        } content: {
             VStack(alignment: .leading, spacing: 0) {
-                // As on the card: the title, big and without a box, then the calendar under it.
-                HStack(alignment: .top, spacing: 4) {
-                    TextField("New event", text: text("title")).textFieldStyle(.plain)
-                        .font(.system(size: 22, weight: .semibold)).tracking(-0.44)
-                        .onSubmit { model.save(e, scope: nil) }
-                    IconButton("close", size: 19, help: "Close") { model.editor = nil }.keyboardShortcut(.cancelAction)
-                }
-                .padding(.top, 2)
-                HStack(spacing: 7) {
-                    Circle().fill(Palette.color(cal?.color.string ?? "blue")).frame(width: 8, height: 8)
-                    PlainMenu(label: cal?.name.string ?? "", items: cals.map { c in (c.name.string, { ed["calendar"] = c.id }) }, color: Look.text2)
-                }
-                .font(.system(size: 13)).padding(.top, 6).padding(.bottom, 8)
-
                 IconRow("clock") {
                     Text("All-day")
                     Spacer()
@@ -330,23 +314,8 @@ struct EventSheet: View {
                 IconRow("notes", last: true) {
                     TextField("Notes", text: text("notes"), axis: .vertical).textFieldStyle(.plain).lineLimit(1...8).padding(.vertical, 10)
                 }
-                HStack(spacing: 10) {
-                    if !isNew {
-                        Button("Delete", role: .destructive) { model.delete(e, scope: nil) }.buttonStyle(UuobButton(.danger, small: true))
-                    }
-                    Spacer()
-                    if isNew { Button("Cancel") { model.editor = nil }.buttonStyle(UuobButton(small: true)) }
-                    Button(isNew ? "Add" : "Save") { model.save(e, scope: nil) }.buttonStyle(UuobButton(.primary, small: true)).keyboardShortcut(.defaultAction)
-                }
-                .padding(.top, 18)
             }
-            .padding(22)
         }
-        .frame(width: 460).frame(minHeight: 300, maxHeight: 640)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(Look.elevated)
-        .foregroundStyle(Look.text)
-        .toggleStyle(UuobSwitch())
         // "Only this one, or all of them?" over the sheet, as on the web.
         .sheet(isPresented: Binding(get: { model.scopeAsk != nil }, set: { if !$0 { model.scopeAsk = nil } })) { ScopeSheet(model: model) }
     }
@@ -450,59 +419,71 @@ struct CalSheet: View {
 
     var body: some View {
         let id = start.id.isEmpty ? nil : start.id
-        let shared = !start.from.isNull
-        let main = start.main.bool
-        let left = shared ? "Leave calendar" : id != nil && !main ? "Delete" : "Cancel"
-        SheetFrame(
-            title: shared ? start.name.string : id != nil ? "Edit calendar" : "New calendar",
-            lead: shared ? "\(start.from.name.string) shares this calendar with you. " + (start.canWrite.bool ? "You can both change it." : "You can view it, but not change it.") : nil
-        ) {
-            if !shared {
-                TextField("Name, e.g. Work", text: $name)
-                HStack(spacing: 12) {
-                    ForEach(Palette.names, id: \.self) { c in
-                        Button { color = c } label: {
-                            Circle().fill(Palette.color(c)).frame(width: 30, height: 30)
-                                .overlay(Circle().strokeBorder(Look.elevated, lineWidth: c == color ? 3 : 0))
-                                .overlay(Circle().strokeBorder(Look.text, lineWidth: c == color ? 2 : 0).padding(-4))
-                        }
-                        .buttonStyle(PressStyle()).help(c)
+        Group {
+            if !start.from.isNull, let id {
+                // Shared with you: what it is, and Leave.
+                DetailSheet(title: start.name.string, onClose: { model.calSheet = nil }, actions: { EmptyView() }) {
+                    Text("Shared by \(start.from.name.string)" + (start.canWrite.bool ? "" : " · view only"))
+                        .font(.system(size: 13)).foregroundStyle(Look.text2).padding(.top, 6).padding(.bottom, 8)
+                    rows(id)
+                } footer: {
+                    HStack {
+                        Button("Leave calendar", role: .destructive) { model.deleteCal(id, subscribed: false) }.buttonStyle(UuobButton(.danger, small: true))
+                        Spacer()
                     }
+                    .padding(.top, 18)
                 }
-                .frame(maxWidth: .infinity)
-            }
-            if start.subscribed.bool {
-                let sub = J(model.data["subs"] ?? [Any]()).array.first { $0.id == start.id }
-                let when = sub.map { ", updated \(agoText($0.refreshed.int64))" } ?? ""
-                Text("Follows a calendar link\(when). Its events change only at the link.").font(.system(size: 13)).foregroundStyle(Look.text2)
-                if sub != nil, let id { Button { model.refreshNow(id) } label: { IconLabel("repeat", "Update now") }.buttonStyle(UuobButton(.ghost)) }
-            }
-            if let id { Button { model.exportCal(id) } label: { IconLabel("download", "Save as .ics file") }.buttonStyle(UuobButton(.ghost)) }
-            if main {
-                Text("Your first calendar stays private. To share events with someone, add a calendar and share that.").font(.system(size: 13)).foregroundStyle(Look.text2)
-            } else if let id, !shared {
-                Button { model.share(id) } label: { IconLabel("share", start.sharedWith.array.isEmpty ? "Share calendar…" : start.note.string) }.buttonStyle(UuobButton(.ghost))
-            }
-        } buttons: {
-            Button(left, role: left == "Cancel" ? nil : .destructive) {
-                if left == "Cancel" { model.calSheet = nil } else if let id { model.deleteCal(id, subscribed: start.subscribed.bool) }
-            }
-            Button(shared ? "Done" : "Save") {
-                if shared {
-                    model.calSheet = nil
-                } else {
-                    var out = (start.value as? [String: Any]) ?? [:]
-                    out["name"] = name
-                    out["color"] = color
-                    model.saveCal(J(out))
+            } else {
+                EditSheet(placeholder: "Name, e.g. Work", title: $name, isNew: id == nil,
+                          canSave: !name.trimmingCharacters(in: .whitespaces).isEmpty,
+                          onCancel: { model.calSheet = nil },
+                          onSave: {
+                              var out = (start.value as? [String: Any]) ?? [:]
+                              out["name"] = name
+                              out["color"] = color
+                              model.saveCal(J(out))
+                          },
+                          onDelete: id == nil || start.main.bool ? nil : { model.deleteCal(id!, subscribed: start.subscribed.bool) }) {
+                    // Its colour, under the name.
+                    HStack(spacing: 10) {
+                        ForEach(Palette.names, id: \.self) { c in
+                            Button { color = c } label: {
+                                Circle().fill(Palette.color(c)).frame(width: 22, height: 22)
+                                    .overlay(Circle().strokeBorder(Look.text, lineWidth: c == color ? 2 : 0).padding(-3))
+                            }
+                            .buttonStyle(PressStyle()).help(c)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } content: {
+                    if let id { rows(id) }
                 }
             }
-            .buttonStyle(UuobButton(.primary, large: true)).keyboardShortcut(.defaultAction)
-            .disabled(!shared && name.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .onAppear {
             name = start.name.string
             color = start.color.str ?? "blue"
+        }
+    }
+
+    /// Follows a link, save as a file, share: one icon row each.
+    @ViewBuilder private func rows(_ id: String) -> some View {
+        let sub = start.subscribed.bool ? J(model.data["subs"] ?? [Any]()).array.first { $0.id == start.id } : nil
+        VStack(spacing: 0) {
+            if let sub {
+                IconRow("link") {
+                    Text("Updated \(agoText(sub.refreshed.int64))").foregroundStyle(Look.text2)
+                    Spacer()
+                    Button("Update now") { model.refreshNow(id) }.buttonStyle(UuobButton(.ghost, small: true))
+                }
+            }
+            Button { model.exportCal(id) } label: { IconRow("download", last: start.main.bool || !start.from.isNull) { Text("Save as .ics file"); Spacer() } }.buttonStyle(.plain)
+            if !start.main.bool && start.from.isNull {
+                Button { model.share(id) } label: {
+                    IconRow("share", last: true) { Text(start.sharedWith.array.isEmpty ? "Share calendar…" : start.note.string).foregroundStyle(Look.accent); Spacer() }
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }
@@ -513,12 +494,11 @@ struct SubscribeSheet: View {
     @State private var name = ""
     var body: some View {
         let ok = !url.trimmingCharacters(in: .whitespaces).isEmpty
-        SheetFrame(title: "Subscribe to a link", lead: "A link to a calendar (.ics or webcal://), like your Google calendar's secret address or a holiday calendar.") {
-            TextField("https://…/calendar.ics", text: $url).onSubmit { if ok { model.subscribeTo(url, name: name) } }
-            TextField("Name (optional)", text: $name).onSubmit { if ok { model.subscribeTo(url, name: name) } }
-        } buttons: {
-            Button("Cancel") { model.subscribing = false }.keyboardShortcut(.cancelAction)
-            Button("Subscribe") { model.subscribeTo(url, name: name) }.buttonStyle(UuobButton(.primary, large: true)).keyboardShortcut(.defaultAction).disabled(!ok)
+        EditSheet(placeholder: "Name (optional)", title: $name, isNew: true, canSave: ok, saveLabel: "Subscribe",
+                  onCancel: { model.subscribing = false }, onSave: { model.subscribeTo(url, name: name) }) {
+            IconRow("link", last: true) {
+                TextField(".ics or webcal:// link", text: $url).textFieldStyle(.plain).onSubmit { if ok { model.subscribeTo(url, name: name) } }
+            }
         }
     }
 }
@@ -531,35 +511,44 @@ struct ImportSheet: View {
 
     var body: some View {
         let cals = model.screen.calendars.array.filter { $0.canEdit.bool }
-        SheetFrame(title: "Import") {
-            ForEach(Array(items.enumerated()), id: \.offset) { i, it in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(it.name.string).font(.system(size: 15, weight: .semibold))
-                    if let err = it.error.str {
-                        Text(err).font(.system(size: 13)).foregroundStyle(Look.danger)
-                    } else {
-                        let rep = it.repeating.int
-                        Text("\(it.events.int) events" + (rep > 0 ? ", \(rep) repeating" : "")).font(.system(size: 13)).foregroundStyle(Look.text2)
-                        let target = i < targets.count ? targets[i] : "new"
-                        FieldMenu(
-                            label: target == "new" ? "A new calendar" : "Into \(cals.first { $0.id == target }?.name.string ?? "")",
-                            items: [("A new calendar", { set(i, "new") })] + cals.map { c in ("Into \(c.name.string)", { set(i, c.id) }) }
-                        )
+        DetailSheet(title: "Import", onClose: { model.importItems = nil }, actions: { EmptyView() }) {
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.offset) { i, it in
+                    IconRow("calendar", last: i == items.count - 1) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(it.name.string).lineLimit(1).truncationMode(.middle)
+                            if let err = it.error.str {
+                                Text(err).font(.system(size: 13)).foregroundStyle(Look.danger)
+                            } else {
+                                let rep = it.repeating.int
+                                Text("\(it.events.int) events" + (rep > 0 ? ", \(rep) repeating" : "")).font(.system(size: 13)).foregroundStyle(Look.text2)
+                            }
+                        }
+                        Spacer()
+                        if it.error.isNull {
+                            let target = i < targets.count ? targets[i] : "new"
+                            PlainMenu(label: target == "new" ? "New calendar" : (cals.first { $0.id == target }?.name.string ?? ""),
+                                      items: [("New calendar", { set(i, "new") })] + cals.map { c in (c.name.string, { set(i, c.id) }) })
+                        }
                     }
                 }
             }
-        } buttons: {
-            Button("Cancel") { model.importItems = nil }.keyboardShortcut(.cancelAction)
-            Button("Import") {
-                let out = items.enumerated().map { i, it -> J in
-                    var v = (it.value as? [String: Any]) ?? [:]
-                    v["target"] = i < targets.count ? targets[i] : "new"
-                    return J(v)
+            .padding(.top, 8)
+        } footer: {
+            HStack {
+                Spacer()
+                Button("Import") {
+                    let out = items.enumerated().map { i, it -> J in
+                        var v = (it.value as? [String: Any]) ?? [:]
+                        v["target"] = i < targets.count ? targets[i] : "new"
+                        return J(v)
+                    }
+                    model.runImport(out)
                 }
-                model.runImport(out)
+                .buttonStyle(UuobButton(.primary, small: true)).keyboardShortcut(.return, modifiers: .command)
+                .disabled(!items.contains { $0.error.isNull })
             }
-            .buttonStyle(UuobButton(.primary, large: true)).keyboardShortcut(.defaultAction)
-            .disabled(!items.contains { $0.error.isNull })
+            .padding(.top, 18)
         }
         .onAppear { targets = items.map { _ in "new" } }
     }

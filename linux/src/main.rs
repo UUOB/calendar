@@ -66,6 +66,8 @@ pub enum Msg {
     ImportRun(Vec<Value>),
     Settings,
     SetSwitch(String, Value),
+    /// The n-th view of the switch (Ctrl+1–4).
+    ShowNth(usize),
     /// The switch's views for this kind of screen, as a list.
     SetViews(String, Vec<String>),
     SetBefore(Option<i64>),
@@ -106,6 +108,8 @@ pub struct Calendar {
 pub struct Widgets {
     root: adw::ApplicationWindow,
     cals: gtk::ListBox,
+    /// The folded sidebar: each calendar as its colour.
+    rail_cals: gtk::Box,
     tasks_check: gtk::CheckButton,
     title: gtk::Label,
     switch: gtk::Box,
@@ -274,7 +278,8 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                 cr.set_source_rgb(r * 0.55 + fr * 0.45, g * 0.55 + fgc * 0.45, bl * 0.55 + fb * 0.45);
                 let title = glib::markup_escape_text(s(b, "title"));
                 layout.set_width(width);
-                if bh < 38.0 {
+                // A short or thin block: one line, cut short (never a letter a line).
+                if bh < 38.0 || bw < 64.0 {
                     layout.set_height(-1);
                     layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     layout.set_markup(&strike(format!("<span size=\"9750\" weight=\"650\">{title}</span> <span size=\"9000\" alpha=\"85%\">{}</span>", glib::markup_escape_text(s(b, "startTime")))));
@@ -457,6 +462,7 @@ fn style() {
     for c in uuob_kit_gtk::COLORS {
         // The palette's colour (light or dark as the theme is).
         let col = format!("@uuob_{c}");
+        checks.push_str(&format!(".rail-dot-{c} {{ border-radius: 999px; border: 2px solid {col}; }} .rail-dot-{c}.on {{ background: {col}; }}\n"));
         checks.push_str(&format!(".uuob-check-{c} check:checked {{ background: {col}; border-color: {col}; color: white; }} .uuob-check-{c} check {{ border-color: {col}; }}\n"));
         checks.push_str(&format!(".tint-{c} {{ background: alpha({col}, 0.22); color: mix({col}, @window_fg_color, 0.3); }} .tint-{c}.answer-invited {{ background: @window_bg_color; box-shadow: inset 0 0 0 1px alpha({col}, 0.7); }} .tint-{c}.answer-maybe {{ background: alpha({col}, 0.13); }} .tint-{c}.k-repeat {{ background: alpha({col}, 0.13); }} .tint-{c}.k-join {{ background: alpha({col}, 0.30); }}\n"));
     }
@@ -778,6 +784,18 @@ impl Calendar {
             row.append(&edit);
             w.cals.append(&gtk::ListBoxRow::builder().child(&row).activatable(false).build());
         }
+        clear(&w.rail_cals);
+        for c in arr(&screen["calendars"]) {
+            let on = c["hidden"] != json!(true);
+            let dot = gtk::Box::builder().width_request(16).height_request(16).halign(gtk::Align::Center).valign(gtk::Align::Center).css_classes(["rail-dot", &format!("rail-dot-{}", s(&c, "color"))]).build();
+            if on {
+                dot.add_css_class("on");
+            }
+            let b = uuob_kit_gtk::rail_button(&dot, &format!("{} {}", if on { "Hide" } else { "Show" }, s(&c, "name")), false);
+            let (tx, id) = (sender.clone(), s(&c, "id").to_string());
+            b.connect_clicked(move |_| tx.input(Msg::ToggleCal(id.clone())));
+            w.rail_cals.append(&b);
+        }
         w.tasks_check.set_active(screen["showTasks"] == json!(true));
         w.title.set_markup(&format!("<b>{}</b> <span weight=\"normal\" alpha=\"62%\">{}</span>", s(&screen["title"], "month"), screen["title"]["year"]));
         clear(&w.switch);
@@ -935,9 +953,12 @@ impl Calendar {
         if c.is_null() {
             return;
         }
-        let col = form();
+        // The kit's detail card: the title with Edit and ✕, then the lines and rows.
+        let edit = uuob_kit_gtk::icon_btn("edit", 19, "Edit");
+        let actions: Vec<gtk::Widget> = if c["canEdit"] == json!(true) { vec![edit.clone().upcast()] } else { vec![] };
+        let (d, col) = uuob_kit_gtk::detail_sheet(s(&c, "title"), &actions);
         col.set_spacing(8);
-        col.append(&label(s(&c, "title"), &["card-title"]));
+        col.set_margin_top(8);
         col.append(&label(s(&c, "when"), &[]));
         if let Some(r) = c["repeat"].as_str() {
             col.append(&label(r, &["caption", "dim-label"]));
@@ -1015,15 +1036,12 @@ impl Calendar {
             col.append(&row);
             col.append(&gtk::Label::builder().label("Your answer stays on your devices.").css_classes(["caption", "dim-label"]).build());
         }
-        let (d, header) = dialog("", 420, &col);
-        if c["canEdit"] == json!(true) {
-            let edit = uuob_kit_gtk::icon_btn("edit", 18, "Edit");
+        {
             let (tx, key, dd) = (sender.clone(), key.to_string(), d.clone());
             edit.connect_clicked(move |_| {
                 dd.close();
                 tx.input(Msg::Edit(key.clone()));
             });
-            header.pack_end(&edit);
         }
         d.present(Some(root));
     }
@@ -1035,8 +1053,21 @@ impl Calendar {
         // As on the card: the title big and without a box, the calendar under it, then rows with icons.
         let col = form();
         col.set_spacing(0);
-        let title = gtk::Entry::builder().placeholder_text("New event").text(s(&ed.borrow(), "title")).css_classes(["title-plain"]).build();
-        col.append(&title);
+        col.set_margin_top(22);
+        // The kit's editor frame: the title and ✕ on one line, no header bar.
+        let d = adw::Dialog::builder().content_width(460).build();
+        let head = gtk::Box::builder().spacing(4).build();
+        let title = gtk::Entry::builder().placeholder_text("New event").text(s(&ed.borrow(), "title")).hexpand(true).css_classes(["sheet-title-edit"]).build();
+        head.append(&title);
+        let close = uuob_kit_gtk::icon_btn("close", 19, "Cancel (Esc)");
+        {
+            let d = d.clone();
+            close.connect_clicked(move |_| {
+                d.close();
+            });
+        }
+        head.append(&close);
+        col.append(&head);
         let cals: Vec<Value> = arr(&self.screen["calendars"]).into_iter().filter(|c| c["canEdit"] == json!(true) || c["id"] == ed.borrow()["calendar"]).collect();
         let cal_line = gtk::Box::builder().spacing(4).css_classes(["cal-line"]).margin_bottom(8).build();
         let dot = gtk::Box::builder().valign(gtk::Align::Center).css_classes(["dot"]).build();
@@ -1258,7 +1289,7 @@ impl Calendar {
         notes_row.add_css_class("last");
         col.append(&notes_row);
         let is_new = ed.borrow()["id"].as_str().is_none_or(str::is_empty);
-        let (d, _) = dialog("", 460, &col);
+        d.set_child(Some(&gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).max_content_height(720).child(&col).build()));
         let actions = gtk::Box::builder().spacing(10).margin_top(18).build();
         let left = uuob_kit_gtk::btn(if is_new { "Cancel" } else { "Delete" }, None, &[]);
         if !is_new {
@@ -1301,6 +1332,19 @@ impl Calendar {
         actions.append(&gtk::Box::builder().hexpand(true).build());
         actions.append(&save);
         col.append(&actions);
+        // Ctrl+Enter saves from anywhere in the editor.
+        let keys = gtk::ShortcutController::new();
+        {
+            let save = save.clone();
+            keys.add_shortcut(gtk::Shortcut::new(
+                gtk::ShortcutTrigger::parse_string("<Control>Return"),
+                Some(gtk::CallbackAction::new(move |_, _| {
+                    save.emit_clicked();
+                    glib::Propagation::Stop
+                })),
+            ));
+        }
+        col.add_controller(keys);
         d.present(Some(root));
     }
 
@@ -1593,11 +1637,30 @@ impl relm4::Component for Calendar {
         side.append(&tasks_check);
         side.append(&settings);
         let side_view = adw::ToolbarView::new();
-        let sh = adw::HeaderBar::builder().show_title(false).build();
+        // The window's buttons once, on the calendar's side.
+        let sh = adw::HeaderBar::builder().show_title(false).show_end_title_buttons(false).build();
         sh.pack_start(&uuob_kit_gtk::update_button(FEED, info.version.clone()));
         side_view.add_top_bar(&sh);
         side_view.set_content(Some(&gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&side).build()));
-        let side_page = adw::NavigationPage::builder().title("Calendars").child(&side_view).build();
+        // The folded sidebar: a + for a new calendar, each calendar as its colour, tasks, Settings.
+        let rail = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_top(12).build();
+        let rail_add = uuob_kit_gtk::rail_icon("plus", "New calendar", false);
+        let tx = sender.clone();
+        rail_add.connect_clicked(move |_| tx.input(Msg::CalSheet(None)));
+        rail.append(&rail_add);
+        rail.append(&gtk::Separator::builder().margin_start(18).margin_end(18).margin_top(4).margin_bottom(4).build());
+        let rail_cals = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
+        rail.append(&rail_cals);
+        let rail_tasks = uuob_kit_gtk::rail_icon("tasks", "Tasks with dates", false);
+        let tx = sender.clone();
+        rail_tasks.connect_clicked(move |_| tx.input(Msg::ToggleTasks));
+        rail.append(&rail_tasks);
+        let rail_settings = uuob_kit_gtk::rail_icon("settings", "Settings (Ctrl+,)", false);
+        rail_settings.set_vexpand(true);
+        rail_settings.set_valign(gtk::Align::End);
+        let tx = sender.clone();
+        rail_settings.connect_clicked(move |_| tx.input(Msg::Settings));
+        rail.append(&rail_settings);
 
         // The main part: the header, then the week or the month.
         let title = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["large-title"]).build();
@@ -1622,7 +1685,7 @@ impl relm4::Component for Calendar {
         nav.append(&prev);
         nav.append(&today);
         nav.append(&next);
-        let header = adw::HeaderBar::builder().show_title(false).build();
+        let header = adw::HeaderBar::builder().show_title(false).show_start_title_buttons(false).build();
         // One row on computers; on phones the title and + first, the views and dates below
         // (the breakpoint further down moves them, as the web version's header wraps).
         let top = gtk::Grid::builder().column_spacing(14).row_spacing(8).css_classes(["cal-header"]).build();
@@ -1656,11 +1719,10 @@ impl relm4::Component for Calendar {
         let main_view = adw::ToolbarView::new();
         main_view.add_top_bar(&header);
         main_view.set_content(Some(&main_col));
-        let content_page = adw::NavigationPage::builder().title("Calendar").child(&main_view).build();
-        let split = adw::NavigationSplitView::builder().sidebar(&side_page).content(&content_page).show_content(true).min_sidebar_width(240.0).max_sidebar_width(300.0).build();
-        // Phones: the calendar list as its own page, and the phones' own switch.
+        // The calendars on the left (a rail of their colours when folded or narrow), the calendar on the right.
+        let scaffold = uuob_kit_gtk::SidebarScaffold::new("calendar", &side_view, &rail, &main_view);
+        // Narrow windows: the phones' own switch and a header on two rows.
         let narrow_bp = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 720sp").expect("condition"));
-        narrow_bp.add_setter(&split, "collapsed", Some(&true.to_value()));
         if let Some(lm) = top.layout_manager() {
             let at = |w: &gtk::Widget, prop: &str, v: i32| narrow_bp.add_setter(&lm.layout_child(w), prop, Some(&v.to_value()));
             at(title.upcast_ref(), "column-span", 3);
@@ -1684,7 +1746,34 @@ impl relm4::Component for Calendar {
             let tx = sender.clone();
             move || tx.input(Msg::Reload)
         });
-        gate.set_content(&split);
+        gate.set_content(&scaffold.widget());
+        // The shared shortcuts (docs/design.md) and Calendar's own.
+        {
+            let m = |msg: fn() -> Msg| -> std::rc::Rc<dyn Fn()> {
+                let tx = sender.clone();
+                std::rc::Rc::new(move || tx.input(msg()))
+            };
+            let mut extra: Vec<(String, String, std::rc::Rc<dyn Fn()>)> = vec![
+                ("Today".into(), "<Control>t".into(), m(|| Msg::Today)),
+                ("Previous".into(), "<Alt>Left".into(), m(|| Msg::Move(-1))),
+                ("Next".into(), "<Alt>Right".into(), m(|| Msg::Move(1))),
+                ("Import a file".into(), "<Control>o".into(), m(|| Msg::Import)),
+            ];
+            for i in 0..4usize {
+                let tx = sender.clone();
+                extra.push((format!("View {}", i + 1), format!("<Control>{}", i + 1), std::rc::Rc::new(move || tx.input(Msg::ShowNth(i)))));
+            }
+            uuob_kit_gtk::Shortcuts {
+                settings: Some(m(|| Msg::Settings)),
+                new: Some(("New event".into(), m(|| Msg::NewEvent(String::new(), None, None)))),
+                find: None,
+                toggle_sidebar: Some(scaffold.toggler()),
+                refresh: Some(m(|| Msg::Reload)),
+                extra,
+            }
+            .install(root.upcast_ref());
+        }
+        std::mem::forget(scaffold);
         root.set_content(Some(&gate.widget()));
         std::mem::forget(gate);
 
@@ -1747,7 +1836,7 @@ impl relm4::Component for Calendar {
             upcoming_gen: 0,
             shown_today: today_s,
         };
-        let widgets = Widgets { root: root.clone(), cals, tasks_check, title, switch, body, heads, allday, columns, hours, grid_scroll, month, toast };
+        let widgets = Widgets { root: root.clone(), cals, rail_cals, tasks_check, title, switch, body, heads, allday, columns, hours, grid_scroll, month, toast };
         model.render(&widgets, &sender);
         // Open on the morning, once the grid has its height (behind the connect screen it has none yet).
         let adj = widgets.grid_scroll.vadjustment();
@@ -1793,6 +1882,11 @@ impl relm4::Component for Calendar {
                         self.cursor = t.clone(); // keep following "today" if we were on it
                     }
                     self.shown_today = t;
+                }
+            }
+            Msg::ShowNth(i) => {
+                if let Some(v) = arr(&self.screen["views"]).get(i) {
+                    sender.input(Msg::Show(s(v, "id").to_string()));
                 }
             }
             Msg::Show(v) => {
