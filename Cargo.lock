@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "calendar-core"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "jiff",
  "regex-lite",
@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "calendar-linux"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "calendar-core",
  "pangocairo",
