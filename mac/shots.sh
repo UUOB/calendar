@@ -22,7 +22,7 @@ for mode in light dark; do
   if click "Year"; then
     shot year
     # A day's hint: the first squares sit near the top left of the page.
-    pointer 340 230; sleep 1; shot year-hint
+    pointer 330 220; sleep 1; shot year-hint
   fi
   click "Week"
   # The side panel's foot: Settings and the toggle on one line, the toggle's hint.
@@ -34,13 +34,14 @@ for mode in light dark; do
     key "15:00"; enter; shot alert-set
   fi
   # A click on the window beside Settings closes it.
-  se "tell process \"$name\" to click at {1040, 700}"; sleep 1.5; shot outside-click
+  # Beside the sheet, on the window it covers (the screen is 1024 wide).
+  win "click at {70, 640}"; sleep 1.5; shot outside-click
   esc
 done
 
 # A small window (dark): the rail, and Year stacked.
 mode=small
-se "tell process \"$name\" to set size of front window to {520, 620}"; sleep 2
+win "set size of front window to {520, 620}"; sleep 2
 shot week
 click "Year" && shot year
 app_down
