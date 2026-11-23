@@ -18,8 +18,8 @@ let calendarApp = AppInfo(
 /// Height of an hour in the grid.
 let HOUR: CGFloat = 52
 /// The views the switch on top can offer.
-/// The views Settings offers here (the year view isn't drawn on the Mac yet).
-let VIEWS: [(String, String)] = [("1d", "1 day"), ("2d", "2 days"), ("3d", "3 days"), ("4d", "4 days"), ("5d", "5 days"), ("6d", "6 days"), ("1w", "Week"), ("month", "Month")]
+/// The views Settings offers here.
+let VIEWS: [(String, String)] = [("1d", "1 day"), ("2d", "2 days"), ("3d", "3 days"), ("4d", "4 days"), ("5d", "5 days"), ("6d", "6 days"), ("1w", "Week"), ("month", "Month"), ("year", "Year")]
 
 @main
 struct CalendarMacApp: App {
@@ -172,6 +172,7 @@ final class CalendarModel {
         st["view"] = view
         st["cursor"] = cursor
         st["narrow"] = narrow
+        st["year_ok"] = true
         if let fit { st["fit"] = fit }
         st["sunday_first"] = settings.sundayFirst
         st["hour12"] = settings.hour12

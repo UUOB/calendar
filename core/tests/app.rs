@@ -173,3 +173,12 @@ fn a_narrow_window_shows_fewer_days() {
     st["fit"] = json!(9);
     assert!(screen(&st)["fitted"].is_null());
 }
+
+#[test]
+fn year_hint_reads_well() {
+    use calendar_core::app::year_hint;
+    assert_eq!(year_hint("2026-03-03", 270, 3), "Tue 3 Mar · 4 h 30 min · 3 events");
+    assert_eq!(year_hint("2026-03-01", 0, 0), "Sun 1 Mar · Nothing planned");
+    assert_eq!(year_hint("2026-03-02", 45, 1), "Mon 2 Mar · 45 min · 1 event");
+    assert_eq!(year_hint("2026-03-04", 0, 1), "Wed 4 Mar · All-day only · 1 event");
+}

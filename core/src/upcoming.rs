@@ -29,6 +29,82 @@ pub fn before_label(m: Option<i64>) -> String {
     format!("{} before", parts.join(" "))
 }
 
+/// An alert's time before, as typed in Custom…: "15:00" (15 hours), "0:30",
+/// "1.30", "130" (1:30), "90" (two digits or fewer: minutes), "2h", "1h30",
+/// "45 min", "1d". Minutes, at most a week; None when it isn't such a time.
+pub fn parse_before(text: &str) -> Option<i64> {
+    let mut t: String = text.trim().to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+    for (long, short) in [("minutes", "m"), ("minute", "m"), ("mins", "m"), ("min", "m"), ("hours", "h"), ("hour", "h"), ("hrs", "h"), ("hr", "h"), ("days", "d"), ("day", "d")] {
+        t = t.replace(long, short);
+    }
+    if t.is_empty() {
+        return None;
+    }
+    let m = if let Some((h, min)) = t.split_once([':', '.']) {
+        let h: i64 = if h.is_empty() { 0 } else { h.parse().ok()? };
+        let min: i64 = min.parse().ok()?;
+        if !(0..60).contains(&min) || h < 0 {
+            return None;
+        }
+        h * 60 + min
+    } else if t.chars().all(|c| c.is_ascii_digit()) {
+        if t.len() > 4 {
+            return None;
+        }
+        let n: i64 = t.parse().ok()?;
+        if t.len() <= 2 {
+            n
+        } else if n % 100 < 60 {
+            n / 100 * 60 + n % 100
+        } else {
+            return None;
+        }
+    } else {
+        let (mut total, mut num, mut unit) = (0i64, String::new(), false);
+        for c in t.chars() {
+            if c.is_ascii_digit() {
+                num.push(c);
+                continue;
+            }
+            let n: i64 = num.parse().ok()?;
+            num.clear();
+            total += n * match c { 'd' => 1440, 'h' => 60, 'm' => 1, _ => return None };
+            unit = true;
+        }
+        if !num.is_empty() {
+            total += num.parse::<i64>().ok()?; // "1h30": the rest is minutes
+        }
+        if !unit {
+            return None;
+        }
+        total
+    };
+    (m <= MAX_BEFORE).then_some(m)
+}
+
+/// Minutes before as Custom… shows them: "15:00", "0:30", "168:00".
+pub fn before_hhmm(m: i64) -> String {
+    let m = m.max(0);
+    format!("{}:{:02}", m / 60, m % 60)
+}
+
+#[cfg(test)]
+mod custom_tests {
+    use super::*;
+
+    #[test]
+    fn typed_times_before() {
+        for (t, m) in [("15:00", 900), ("0:30", 30), ("1:30", 90), ("1.30", 90), (":45", 45), ("130", 90), ("90", 90), ("5", 5),
+            ("2h", 120), ("1h30", 90), ("1h 30m", 90), ("45 min", 45), ("1d", 1440), ("1 day 2 hours", 1560), ("168:00", 10080), ("0:00", 0)] {
+            assert_eq!(parse_before(t), Some(m), "{t}");
+        }
+        for t in ["", "abc", "1:75", "190", "12345", "168:01", "200h", "2x"] {
+            assert_eq!(parse_before(t), None, "{t}");
+        }
+        assert_eq!((before_hhmm(900), before_hhmm(30), before_hhmm(10080)), ("15:00".into(), "0:30".into(), "168:00".into()));
+    }
+}
+
 /// A place to show: not a link (a meeting's address isn't one).
 fn place(e: &Json) -> Option<String> {
     let l = e.get("location").and_then(Json::as_str)?.trim();

@@ -90,6 +90,18 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import app.uuob.calendar.core.parseBefore
+import app.uuob.calendar.core.beforeHhmm
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import app.uuob.calendar.core.ago
 import app.uuob.calendar.core.alertOptions
 import app.uuob.calendar.core.asksScope
@@ -135,7 +147,9 @@ import app.uuob.kit.ShortcutsHost
 import app.uuob.kit.SidebarScaffold
 import app.uuob.kit.ProvideText
 import app.uuob.kit.WebSwitch
-import app.uuob.kit.NumberWheel
+import app.uuob.kit.SidebarRow
+import app.uuob.kit.tint
+import app.uuob.kit.TintKind
 import app.uuob.kit.WebSheet
 import app.uuob.kit.Colors
 import app.uuob.kit.Icon24
@@ -532,7 +546,9 @@ fun CalendarScreen(model: CalendarModel, updater: Updater) {
   ShortcutsHost(calendarShortcuts(model, files)) {
   SidebarScaffold(model.calsOpen, { model.calsOpen = it }, sidebar = {
     Sidebar(model, s, updater, files, Modifier.weight(1f))
-  }, rail = { CalendarRail(model, s) }) {
+  }, rail = { CalendarRail(model, s) }, footer = {
+    SidebarRow("Settings", onClick = { model.calsOpen = false; model.settingsOpen = true }, leading = { Icon24("settings", size = 19.dp, tint = Tokens.text2) })
+  }) {
   BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     val wide = maxWidth >= 720.dp
     LaunchedEffect(wide) { model.narrow = !wide }
@@ -662,9 +678,6 @@ private fun Sidebar(model: CalendarModel, s: JSONObject, updater: Updater, files
       if (!s.optBoolean("showTasks")) Icon24("lock", size = 14.dp, tint = Tokens.text3)
     }
   }
-  Row(Modifier.padding(top = 20.dp).clip(Pill.shape).clickable { model.calsOpen = false; model.settingsOpen = true }.padding(horizontal = 10.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-    Icon24("settings", size = 19.dp, tint = Tokens.text2); Spacer(Modifier.width(8.dp)); Text("Settings", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Tokens.text2)
-  }
 }
 
 @Composable
@@ -693,11 +706,11 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean, phone: Bo
   }
   val nav = @Composable {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-      IconBtn("left", { model.move(-1) })
+      IconBtn("left", { model.move(-1) }, description = "Previous")
       Box(Modifier.height(32.dp).clip(Pill.shape).background(Tokens.surface2).clickable { model.cursor = today() }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
         Text("Today", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
       }
-      IconBtn("right", { model.move(1) })
+      IconBtn("right", { model.move(1) }, description = "Next")
     }
   }
   val new = @Composable {
@@ -720,8 +733,8 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean, phone: Bo
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         switch(Modifier, true)
         Spacer(Modifier.weight(1f))
-        IconBtn("left", { model.move(-1) })
-        IconBtn("right", { model.move(1) })
+        IconBtn("left", { model.move(-1) }, description = "Previous")
+        IconBtn("right", { model.move(1) }, description = "Next")
       }
     }
   }
@@ -732,13 +745,9 @@ private fun mix(a: Color, p: Float, b: Color) = Color(a.red * p + b.red * (1 - p
 
 /** The look of an event by your answer: invited is an outline, maybe striped, no faded and struck through. */
 /** How strongly an event is tinted, by kind: a meeting to join a little deeper, a repeating one lighter. */
-private fun tintOf(e: JSONObject, base: Float = 0.24f): Float = when {
-  e.optBoolean("join") -> base + 0.08f
-  e.optBoolean("repeats") -> base - 0.09f
-  else -> base
-}
+private fun tintOf(e: JSONObject, base: Float = 0.24f): Float = tint(TintKind.of(e).copy(allDay = base < 0.24f)).fill
 /** Past events fade a little, declined ones more. */
-private fun fadeOf(e: JSONObject): Float = if (e.text("answer") == "no") 0.45f else if (e.optBoolean("past")) 0.6f else 1f
+private fun fadeOf(e: JSONObject): Float = tint(TintKind.of(e)).fade
 
 @Composable
 private fun Modifier.eventLook(c: Color, answer: String?, strength: Float, shape: RoundedCornerShape): Modifier {
@@ -866,21 +875,28 @@ private fun DayColumn(model: CalendarModel, c: JSONObject, nowMinute: Int, modif
           .alpha(fadeOf(b)).clip(shape).eventLook(col, answer, tintOf(b), shape)
           .clickable(src, null) { model.open(b.optString("key")) },
       ) {
-        Box(Modifier.width(3.dp).fillMaxHeight().background(col.copy(alpha = if (b.optBoolean("repeats")) 0.55f else 1f)))
+        Box(Modifier.width(3.dp).fillMaxHeight().background(col.copy(alpha = tint(TintKind.of(b)).edge)))
         val fg = mix(col, 0.55f, MaterialTheme.colorScheme.onSurface)
         val short = h < 38.dp
         Column(Modifier.padding(start = 8.dp, end = 4.dp, top = if (short) 2.dp else 3.dp).fillMaxHeight(), verticalArrangement = if (short) Arrangement.Center else Arrangement.spacedBy(1.dp)) {
           val where = if (h >= 76.dp) b.optString("place") else ""
           val room = maxOf(1, ((h.value - 5 - if (where.isNotEmpty()) 15 else 0) / 15).toInt())
           val timeLine = h >= 38.dp && room > 1
-          Text(
-            buildAnnotatedString {
-              append(b.optString("title"))
-              if (short) withStyle(SpanStyle(fontSize = 12.sp, fontWeight = FontWeight.Medium)) { append(" " + b.optString("startTime")) }
-            },
-            fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 15.sp, color = fg, maxLines = if (timeLine) room - 1 else room, overflow = TextOverflow.Ellipsis,
-            textDecoration = if (answer == "no") TextDecoration.LineThrough else null,
-          )
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+              buildAnnotatedString {
+                append(b.optString("title"))
+                if (short) withStyle(SpanStyle(fontSize = 12.sp, fontWeight = FontWeight.Medium)) { append(" " + b.optString("startTime")) }
+              },
+              fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 15.sp, color = fg, maxLines = if (timeLine) room - 1 else room, overflow = TextOverflow.Ellipsis,
+              textDecoration = if (answer == "no") TextDecoration.LineThrough else null, modifier = Modifier.weight(1f, fill = false),
+            )
+            // The kind's mark stays on a one-line block too, where there's room.
+            if (short && bw >= 90.dp) {
+              if (b.optBoolean("join")) Icon24("video", size = 11.dp, stroke = 2f, tint = fg.copy(alpha = 0.85f))
+              if (b.optBoolean("repeats")) Icon24("repeat", size = 10.dp, stroke = 2.2f, tint = fg.copy(alpha = 0.85f))
+            }
+          }
           if (timeLine) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(b.optString("time"), fontSize = 12.sp, lineHeight = 15.sp, color = fg.copy(alpha = 0.85f), maxLines = 1)
             // A camera for a meeting to join, arrows for a repeating event.
@@ -919,13 +935,27 @@ private fun planColor(level: Int, other: Boolean): Color = when {
 
 /** One day of the year: a rounded square, ringed when it is today; tapping opens it. */
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun PlanCell(model: CalendarModel, c: JSONObject, modifier: Modifier) {
   val other = c.optBoolean("other")
-  Box(
-    modifier.aspectRatio(1f).clip(RoundedCornerShape(3.dp)).background(planColor(c.optInt("level"), other))
-      .then(if (c.optBoolean("today")) Modifier.border(1.5.dp, Colors.of("red"), RoundedCornerShape(3.dp)) else Modifier)
-      .then(if (other) Modifier else Modifier.clickable { model.day(c.optString("date")) }),
-  )
+  val cell = @Composable { m: Modifier ->
+    Box(
+      m.aspectRatio(1f).clip(RoundedCornerShape(3.dp)).background(planColor(c.optInt("level"), other))
+        .then(if (c.optBoolean("today")) Modifier.border(1.5.dp, Colors.of("red"), RoundedCornerShape(3.dp)) else Modifier),
+      contentAlignment = Alignment.Center,
+    ) {
+      // All-day events add no hours; a dot still shows the day has something.
+      if (!other && c.optBoolean("allDay")) Box(Modifier.fillMaxSize(0.34f).clip(CircleShape).background(if (c.optInt("level") >= 3) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.primary))
+    }
+  }
+  if (other) { cell(modifier); return }
+  // A long press (or a mouse resting on it): "Tue 3 Mar · 4 h 30 min · 3 events"; a tap opens the day.
+  // The row's share of width stays on a box of its own; the hint wraps the square inside it.
+  Box(modifier) {
+    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(), { PlainTooltip { Text(c.optString("hint")) } }, rememberTooltipState()) {
+      cell(Modifier.fillMaxWidth().clickable { model.day(c.optString("date")) })
+    }
+  }
 }
 
 /** The year as a heat map of planned time (like GitHub's year of activity): phones a week a row, wider screens a week a column. */
@@ -1080,7 +1110,7 @@ private fun Select(options: List<Pair<String, String>>, current: String, modifie
   }
 }
 
-/** The alert picker: the usual times, or Custom… (days, hours and minutes before, up to a week). */
+/** The alert picker: the usual times, or Custom…: a time before the event as hours and minutes ("15:00", "0:30", up to 168:00). */
 @Composable
 private fun AlertPick(options: List<JSONObject>, current: String, plain: Boolean = false, onPick: (String) -> Unit) {
   var custom by remember { mutableStateOf(false) }
@@ -1089,21 +1119,26 @@ private fun AlertPick(options: List<JSONObject>, current: String, plain: Boolean
   val listed = if (known.any { it.first == current } || current.toLongOrNull() == null) known else known + (current to beforeLabel(current.toLong()))
   Select(listed + ("custom" to "Custom…"), current, plain = plain) { v -> if (v == "custom") custom = true else onPick(v) }
   if (custom) {
-    val m = current.toLongOrNull()?.coerceAtLeast(0) ?: 15L
-    var d by remember { mutableStateOf((m / 1440).toInt()) }
-    var h by remember { mutableStateOf(((m % 1440) / 60).toInt()) }
-    var mi by remember { mutableStateOf(((m % 60) / 5 * 5).toInt()) }
+    val before = beforeHhmm(current.toLongOrNull()?.coerceAtLeast(0) ?: 15L)
+    var text by remember { mutableStateOf(TextFieldValue(before, TextRange(0, before.length))) }
+    val focus = remember { FocusRequester() }
+    // A time sets it; anything else goes back to what was there.
+    val done = { parseBefore(text.text)?.let { onPick(it.toString()); custom = false } ?: run { text = TextFieldValue(before, TextRange(0, before.length)) } }
     WebSheet({ custom = false }, padding = 22.dp) {
       Text("Alert", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp)
-      Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        NumberWheel((0..7).toList(), d, "days", { d = it }, Modifier.weight(1f))
-        NumberWheel((0..23).toList(), h, "hours", { h = it }, Modifier.weight(1f))
-        NumberWheel((0..55 step 5).toList(), mi, "minutes", { mi = it }, Modifier.weight(1f))
+      Row(Modifier.fillMaxWidth().padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        WebField(
+          text, { text = it }, Modifier.weight(1f).focusRequester(focus), placeholder = "h:mm",
+          textStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center),
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+          keyboardActions = KeyboardActions(onDone = { done() }),
+        )
+        Text("before", fontSize = 17.sp, color = Tokens.text2)
       }
-      Text("before the event", color = Tokens.text2, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 14.dp))
-      val total = minOf(d * 1440L + h * 60L + mi, 7 * 1440L)
-      Btn("Done", { if (total > 0) onPick(total.toString()); custom = false }, Modifier.fillMaxWidth().padding(top = 18.dp), kind = BtnKind.Primary, lg = true, enabled = total > 0)
+      Text("Hours and minutes, like 15:00 or 0:30", fontSize = 13.sp, color = Tokens.text3, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+      Btn("Done", { done() }, Modifier.fillMaxWidth().padding(top = 18.dp), kind = BtnKind.Primary, lg = true)
     }
+    LaunchedEffect(Unit) { focus.requestFocus() }
   }
 }
 
@@ -1260,6 +1295,7 @@ private fun EventSheet(model: CalendarModel, start: JSONObject) {
   EditSheet(
     ed.optString("title"), { set("title", it) }, placeholder = "New event", isNew = isNew,
     onCancel = { model.editor = null }, onSave = { model.save(ed, null) }, onDelete = { model.delete(ed, null) },
+    dirty = ed.toString() != start.toString(),
     under = {
       Box(Modifier.size(8.dp).clip(CircleShape).background(Colors.of(cal?.optString("color"))))
       ProvideText(Tokens.text2) { Select(cals.map { it.optString("id") to it.optString("name") }, ed.optString("calendar"), plain = true, small = true) { set("calendar", it) } }
@@ -1462,7 +1498,7 @@ private fun CalendarSettings(model: CalendarModel, s: JSONObject) {
         Text("Your addresses", fontSize = 15.sp, modifier = Modifier.weight(1f))
         if (emails.isEmpty()) Text("None yet", fontSize = 15.sp, color = Tokens.text3)
       }
-      emails.forEachIndexed { i, a -> IconRow(null, last = i == emails.size - 1) { Text(a, fontSize = 15.sp, color = Tokens.text2, modifier = Modifier.weight(1f), maxLines = 1); IconBtn("close", { model.forgetAddress(a) }, size = 16.dp) } }
+      emails.forEachIndexed { i, a -> IconRow(null, last = i == emails.size - 1) { Text(a, fontSize = 15.sp, color = Tokens.text2, modifier = Modifier.weight(1f), maxLines = 1); IconBtn("close", { model.forgetAddress(a) }, size = 16.dp, description = "Forget") } }
     }
   }
 }

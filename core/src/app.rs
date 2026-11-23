@@ -557,7 +557,10 @@ fn year_grid(days: &[String], map: &[(String, Vec<Json>, Vec<Json>)], cursor: &s
         let mut week = vec![];
         for d in chunk {
             let (dy, dm, dn) = zones::ymd(d);
-            let minutes = map.iter().find(|x| &x.0 == d).map_or(0, |x| planned_minutes(&x.2));
+            let day = map.iter().find(|x| &x.0 == d);
+            let minutes = day.map_or(0, |x| planned_minutes(&x.2));
+            let events = day.map_or(0, |x| x.1.len() + x.2.len());
+            let all_day = day.is_some_and(|x| !x.1.is_empty());
             let other = dy != y;
             if !other {
                 total += minutes;
@@ -565,11 +568,31 @@ fn year_grid(days: &[String], map: &[(String, Vec<Json>, Vec<Json>)], cursor: &s
                     months.push(json!({ "name": &MONTHS[(dm - 1) as usize][..3], "week": w }));
                 }
             }
-            week.push(json!({ "date": d, "minutes": minutes, "level": if other { 0 } else { plan_level(minutes) }, "other": other, "today": d == today }));
+            week.push(json!({
+                "date": d, "minutes": minutes, "level": if other { 0 } else { plan_level(minutes) }, "other": other, "today": d == today,
+                "events": events, "allDay": all_day, "hint": year_hint(d, minutes, events),
+            }));
         }
         weeks.push(json!(week));
     }
     json!({ "weeks": weeks, "months": months, "hours": total / 60 })
+}
+
+/// A year cell's hover: "Tue 3 Mar · 4 h 30 min · 3 events", "Sun 1 Mar · Nothing planned".
+pub fn year_hint(date: &str, minutes: i64, events: usize) -> String {
+    let (_, m, d) = zones::ymd(date);
+    let day = format!("{} {d} {}", &WEEKDAYS[zones::weekday(date) as usize][..3], &MONTHS[(m - 1) as usize][..3]);
+    if events == 0 {
+        return format!("{day} · Nothing planned");
+    }
+    let time = match (minutes / 60, minutes % 60) {
+        (0, 0) => "all day".to_string(),
+        (0, mm) => format!("{mm} min"),
+        (h, 0) => format!("{h} h"),
+        (h, mm) => format!("{h} h {mm} min"),
+    };
+    let time = if minutes == 0 { "All-day only".to_string() } else { time };
+    format!("{day} · {time} · {events} event{}", if events == 1 { "" } else { "s" })
 }
 
 /// Lays out overlapping timed events side by side: (event, lane, lanes).

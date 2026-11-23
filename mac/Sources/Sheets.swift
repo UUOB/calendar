@@ -52,48 +52,57 @@ extension ISO8601DateFormatter {
     }()
 }
 
-/// The alert picker: the usual times, or Custom… (a number of minutes, hours or days, up to a week).
+/// The alert picker: the usual times, or Custom…, which puts a time in its
+/// place ("15:00" is 15 hours before, "0:30" half an hour, up to 168:00): Enter
+/// sets it, Esc or a click elsewhere keeps what was there.
 struct AlertPick: View {
     let options: [J]
     let current: String
     var plain = false
     let pick: (String) -> Void
     @State private var custom = false
-    @State private var amount = 15
-    @State private var unit = 0
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    private var before: String { beforeHhmm(minutes: Int64(current) ?? 15) }
 
     var body: some View {
         // A time chosen with Custom… shows by its name, though the list it came with doesn't have it.
         let shown = options.first { $0["value"].string == current }?.label.string ?? Int64(current).map { beforeLabel(minutes: $0) } ?? "Custom…"
-        let items: [(String, () -> Void)] = options.map { o in (o.label.string, { pick(o["value"].string) }) } + [("Custom…", { custom = true })]
-        VStack(alignment: .leading, spacing: 6) {
-            if plain {
-                // On the card: a plain line that opens the menu.
-                Menu {
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, it in Button(it.0, action: it.1) }
-                } label: {
-                    HStack(spacing: 6) { Text(shown); Ico("chevron", size: 13).rotationEffect(.degrees(90)).foregroundStyle(Look.text2) }
-                        .font(.system(size: 15)).foregroundStyle(Look.text).contentShape(Rectangle())
-                }
-                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-            } else {
-                FieldMenu(label: shown, items: items)
+        let items: [(String, () -> Void)] = options.map { o in (o.label.string, { pick(o["value"].string) }) } + [("Custom…", { text = before; custom = true })]
+        if custom {
+            HStack(spacing: 8) {
+                TextField("h:mm", text: $text)
+                    .textFieldStyle(UuobField()).multilineTextAlignment(.trailing).frame(width: 84)
+                    .focused($focused)
+                    .onSubmit(commit)
+                    .onExitCommand { custom = false }
+                    .onChange(of: focused) { if !focused { custom = false } }
+                    .onAppear { DispatchQueue.main.async { focused = true } }
+                    .uuobHint("Like 15:00 or 0:30 · Enter sets it, Esc cancels")
+                Text("before").foregroundStyle(Look.text2).fixedSize()
             }
-            if custom {
-                HStack(spacing: 8) {
-                    TextField("", value: $amount, format: .number).textFieldStyle(UuobField()).frame(width: 80)
-                    FieldMenu(label: ["minutes", "hours", "days"][unit], items: [("minutes", { unit = 0 }), ("hours", { unit = 1 }), ("days", { unit = 2 })]).frame(width: 130)
-                    Text("before").foregroundStyle(Look.text2)
-                    Button("Set") {
-                        let m = amount * [1, 60, 1440][unit]
-                        if m > 0 {
-                            pick(String(min(m, 10080)))
-                            custom = false
-                        }
-                    }
-                    .buttonStyle(UuobButton(.primary, small: true))
-                }
+        } else if plain {
+            // On the card: a plain line that opens the menu.
+            Menu {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, it in Button(it.0, action: it.1) }
+            } label: {
+                HStack(spacing: 6) { Text(shown); Ico("chevron", size: 13).rotationEffect(.degrees(90)).foregroundStyle(Look.text2) }
+                    .font(.system(size: 15)).foregroundStyle(Look.text).contentShape(Rectangle())
             }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+        } else {
+            FieldMenu(label: shown, items: items)
+        }
+    }
+
+    /// A time sets it; anything else goes back to what was there.
+    private func commit() {
+        if let m = parseBefore(text: text) {
+            custom = false
+            pick(String(m))
+        } else {
+            text = before
         }
     }
 }
@@ -349,7 +358,7 @@ struct EventSheet: View {
                     Text(letter).font(.system(size: 15, weight: .semibold)).foregroundStyle(on ? .white : Look.text2)
                         .frame(width: 38, height: 38).background(on ? Look.accent : Look.surface2, in: Circle())
                 }
-                .buttonStyle(PressStyle()).help(code)
+                .buttonStyle(PressStyle()).uuobHint(code)
             }
         }
         .frame(maxWidth: .infinity)
@@ -451,7 +460,7 @@ struct CalSheet: View {
                                 Circle().fill(Palette.color(c)).frame(width: 22, height: 22)
                                     .overlay(Circle().strokeBorder(Look.text, lineWidth: c == color ? 2 : 0).padding(-3))
                             }
-                            .buttonStyle(PressStyle()).help(c)
+                            .buttonStyle(PressStyle()).uuobHint(c)
                         }
                     }
                     .padding(.vertical, 4)

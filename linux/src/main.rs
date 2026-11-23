@@ -120,6 +120,7 @@ pub struct Widgets {
     hours: gtk::DrawingArea,
     grid_scroll: gtk::ScrolledWindow,
     month: gtk::Grid,
+    year: gtk::Box,
     toast: adw::ToastOverlay,
 }
 
@@ -155,6 +156,24 @@ fn answer_class(w: &impl IsA<gtk::Widget>, answer: &Value) {
 }
 
 /// Empties a box, list or grid (each takes its children out its own way).
+/// The sheet around `w` grows to show rows added after it opened (an adw::Dialog
+/// keeps its first size otherwise, cutting off its bottom: the editor's Add).
+fn grow_sheet(w: &impl IsA<gtk::Widget>) {
+    let w = w.as_ref().clone();
+    glib::idle_add_local_once(move || {
+        if let Some(d) = w.ancestor(adw::Dialog::static_type()).and_then(|d| d.downcast::<adw::Dialog>().ok()) {
+            if let Some(child) = d.child() {
+                let width = d.content_width().max(child.width());
+                let (_, natural, _, _) = child.measure(gtk::Orientation::Vertical, width);
+                d.set_content_height(natural.min(760));
+            }
+        }
+    });
+}
+
+/// The months by name, for the year view's narrow layout.
+const MONTH_NAMES: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
 fn clear(b: &impl IsA<gtk::Widget>) {
     let w = b.as_ref();
     if let Some(l) = w.downcast_ref::<gtk::ListBox>() {
@@ -229,7 +248,8 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                 let past = b["past"] == json!(true);
                 let repeats = b["repeats"] == json!(true);
                 let join = b["join"] == json!(true);
-                let tint = if join { 0.32 } else if repeats { 0.15 } else { 0.24 };
+                let shade = uuob_kit_gtk::tint(uuob_kit_gtk::TintKind::of(b));
+                let tint = shade.fill;
                 let (pr, pg, pb) = page_rgb();
                 let mixed = |a: f64| (r * a + pr * (1.0 - a), g * a + pg * (1.0 - a), bl * a + pb * (1.0 - a));
                 cr.save().ok();
@@ -268,7 +288,7 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                         cr.paint().ok();
                     }
                 }
-                cr.set_source_rgba(r, g, bl, if repeats { 0.55 } else { 1.0 });
+                cr.set_source_rgba(r, g, bl, shade.edge);
                 cr.rectangle(x, y, 3.0, bh);
                 let _ = cr.fill();
                 // The title wraps over the lines the block has room for; the time goes
@@ -283,8 +303,21 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                     layout.set_height(-1);
                     layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     layout.set_markup(&strike(format!("<span size=\"9750\" weight=\"650\">{title}</span> <span size=\"9000\" alpha=\"85%\">{}</span>", glib::markup_escape_text(s(b, "startTime")))));
-                    cr.move_to(x + 9.0, y + (bh - layout.pixel_size().1 as f64) / 2.0);
+                    // The kind's mark stays on a one-line block too, where there's room.
+                    let marks: Vec<&str> = [(join, "video"), (repeats, "repeat")].iter().filter(|m| m.0).map(|m| m.1).collect();
+                    let icons = if bw >= 90.0 { marks.len() as f64 * 15.0 } else { 0.0 };
+                    layout.set_width((((bw - 13.0 - icons).max(10.0)) * gtk::pango::SCALE as f64) as i32);
+                    let (tw, th) = layout.pixel_size();
+                    let ty = y + (bh - th as f64) / 2.0;
+                    cr.move_to(x + 9.0, ty);
                     pangocairo::functions::show_layout(cr, &layout);
+                    if icons > 0.0 {
+                        let mut ix = x + 9.0 + tw as f64 + 5.0;
+                        for name in marks {
+                            uuob_kit_gtk::draw_icon(cr, name, ix, ty + (th as f64 - 11.0) / 2.0, 11.0, 2.0);
+                            ix += 15.0;
+                        }
+                    }
                 } else {
                     let place = if bh >= 76.0 { s(b, "place") } else { "" };
                     let room = (((bh - 5.0 - if place.is_empty() { 0.0 } else { 15.0 }) / 15.0).floor() as i32).max(1);
@@ -328,7 +361,7 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                 layout.set_height(-1);
                 if declined || past {
                     cr.pop_group_to_source().ok();
-                    cr.paint_with_alpha(if declined { 0.45 } else { 0.6 }).ok();
+                    cr.paint_with_alpha(shade.fade).ok();
                 }
                 cr.restore().ok();
             }
@@ -520,6 +553,14 @@ fn style() {
          .mh {{ font-size: 13px; color: @uuob_text2; font-weight: 600; padding: 0 10px 8px; letter-spacing: 0.4px; }}
          .cell {{ border-top: 1px solid @uuob_line; border-left: 1px solid @uuob_line; padding: 4px; min-height: 96px; transition: background 150ms; }}
          .cell:hover {{ background: alpha(@window_fg_color, 0.04); }}
+         box.year {{ padding: 18px 2px 16px; }}
+         .ycell {{ min-width: 0; min-height: 0; padding: 0; border-radius: 3px; background: @uuob_surface2; box-shadow: none; }}
+         .ycell.l1 {{ background: alpha(@accent_bg_color, 0.28); }} .ycell.l2 {{ background: alpha(@accent_bg_color, 0.5); }}
+         .ycell.l3 {{ background: alpha(@accent_bg_color, 0.75); }} .ycell.l4 {{ background: @accent_bg_color; }}
+         .ycell.other {{ background: none; }} .ycell.today {{ box-shadow: inset 0 0 0 1.5px #ff3b30; }}
+         .ycell:hover:not(.legend):not(.other) {{ box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.4); }}
+         .ydot {{ min-width: 5px; min-height: 5px; border-radius: 99px; background: @accent_bg_color; }}
+         .ycell.l3 .ydot, .ycell.l4 .ydot {{ background: rgba(255,255,255,0.85); }}
          .cell.other .num {{ color: @uuob_text3; }}
          button.num {{ min-width: 30px; min-height: 30px; padding: 0; border-radius: 999px; font-size: 15px; font-weight: 600; }}
          button.num.today {{ background: @uuob_red; color: white; }}
@@ -563,66 +604,79 @@ fn open_uri(uri: &str) {
 }
 
 /// `label.stack`: a small grey label above its field.
-/// An alert picker: the usual times, or Custom… (a number of minutes, hours or days, up to a week).
+/// An alert picker: the usual times, or Custom…, which puts a time in the
+/// list's place ("15:00" is 15 hours before, "0:30" half an hour, up to
+/// 168:00): Enter sets it, Esc or clicking elsewhere keeps what was there.
 fn alert_pick(options: Value, current: String, on_pick: impl Fn(String) + 'static) -> gtk::Box {
+    use calendar_core::upcoming::{before_hhmm, before_label, parse_before};
     // What each item gives; the last is Custom….
     let values: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(arr(&options).iter().map(|o| s(o, "value").to_string()).collect()));
     let mut names: Vec<String> = arr(&options).iter().map(|o| s(o, "label").to_string()).collect();
     names.push("Custom…".into());
     let model = gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
-    let drop = gtk::DropDown::builder().model(&model).css_classes(["field"]).build();
-    drop.set_selected(values.borrow().iter().position(|v| *v == current).unwrap_or(0) as u32);
+    let drop = gtk::DropDown::builder().model(&model).css_classes(["field"]).hexpand(true).build();
+    let at_first = values.borrow().iter().position(|v| *v == current).unwrap_or(0) as u32;
+    drop.set_selected(at_first);
+    let chosen = Rc::new(Cell::new(at_first));
+    let entry = gtk::Entry::builder().placeholder_text("h:mm").width_chars(6).max_width_chars(7).xalign(1.0).css_classes(["field"]).hexpand(true)
+        .tooltip_text("Hours and minutes before, like 15:00 or 0:30. Enter sets it, Esc cancels.").build();
     let custom = gtk::Box::builder().spacing(8).visible(false).build();
-    let n = gtk::SpinButton::with_range(1.0, 10080.0, 1.0);
-    n.set_value(15.0);
-    n.add_css_class("field");
-    let unit = gtk::DropDown::from_strings(&["minutes", "hours", "days"]);
-    unit.add_css_class("field");
-    let set = uuob_kit_gtk::btn("Set", None, &["primary", "sm"]);
-    set.set_valign(gtk::Align::Center);
-    custom.append(&n);
-    custom.append(&unit);
+    custom.append(&entry);
     custom.append(&gtk::Label::builder().label("before").css_classes(["secondary"]).build());
-    custom.append(&set);
     let on_pick = Rc::new(on_pick);
     let quiet = Rc::new(Cell::new(false));
-    // The sheet around it grows to show the custom line (a dialog keeps its first size otherwise).
-    let grow = |w: &gtk::Box| {
-        let w = w.clone();
-        glib::idle_add_local_once(move || {
-            if let Some(d) = w.ancestor(adw::Dialog::static_type()).and_then(|d| d.downcast::<adw::Dialog>().ok()) {
-                if let Some(child) = d.child() {
-                    let width = d.content_width().max(child.width());
-                    let (_, natural, _, _) = child.measure(gtk::Orientation::Vertical, width);
-                    d.set_content_height(natural.min(760));
-                }
+    let before = {
+        let (values, chosen) = (values.clone(), chosen.clone());
+        move || before_hhmm(values.borrow().get(chosen.get() as usize).and_then(|v| v.parse().ok()).unwrap_or(15))
+    };
+    // Back to the list as it was.
+    let cancel: Rc<dyn Fn()> = {
+        let (drop, custom, quiet, chosen) = (drop.clone(), custom.clone(), quiet.clone(), chosen.clone());
+        Rc::new(move || {
+            if !custom.is_visible() {
+                return;
             }
-        });
+            quiet.set(true);
+            drop.set_selected(chosen.get());
+            quiet.set(false);
+            custom.set_visible(false);
+            drop.set_visible(true);
+        })
     };
     {
-        let (custom, on_pick, values, quiet) = (custom.clone(), on_pick.clone(), values.clone(), quiet.clone());
+        let (custom, on_pick, values, quiet, entry, chosen, before) = (custom.clone(), on_pick.clone(), values.clone(), quiet.clone(), entry.clone(), chosen.clone(), before.clone());
         drop.connect_selected_notify(move |d| {
             if quiet.get() {
                 return;
             }
             let i = d.selected() as usize;
             let vals = values.borrow();
-            custom.set_visible(i >= vals.len());
-            grow(&custom);
             if i < vals.len() {
+                chosen.set(i as u32);
                 on_pick(vals[i].clone());
+            } else {
+                drop_custom(d, &custom, &entry, &before());
             }
         });
     }
+    fn drop_custom(d: &gtk::DropDown, custom: &gtk::Box, entry: &gtk::Entry, text: &str) {
+        entry.set_text(text);
+        d.set_visible(false);
+        custom.set_visible(true);
+        let entry = entry.clone();
+        glib::idle_add_local_once(move || {
+            entry.grab_focus();
+            entry.select_region(0, -1);
+        });
+    }
     {
-        let (on_pick, custom, drop, model, values, quiet) = (on_pick.clone(), custom.clone(), drop.clone(), model.clone(), values.clone(), quiet.clone());
-        set.connect_clicked(move |_| {
-            let per = [1.0, 60.0, 1440.0][unit.selected() as usize % 3];
-            let m = (n.value() * per).round() as i64;
-            if m <= 0 {
+        let (on_pick, custom, drop, model, values, quiet, chosen, before) = (on_pick.clone(), custom.clone(), drop.clone(), model.clone(), values.clone(), quiet.clone(), chosen.clone(), before.clone());
+        entry.connect_activate(move |e| {
+            let Some(m) = parse_before(&e.text()) else {
+                e.set_text(&before());
+                e.select_region(0, -1);
                 return;
-            }
-            let m = m.min(calendar_core::upcoming::MAX_BEFORE);
+            };
             let v = m.to_string();
             // The chosen time shows in the list, as its own item. (Adding it moves the
             // selection at once, so the list doesn't answer until it's settled.)
@@ -634,19 +688,41 @@ fn alert_pick(options: Value, current: String, on_pick: impl Fn(String) + 'stati
                     None => {
                         let i = vals.len();
                         vals.push(v.clone());
-                        model.splice(i as u32, 0, &[calendar_core::upcoming::before_label(Some(m)).as_str()]);
+                        model.splice(i as u32, 0, &[before_label(Some(m)).as_str()]);
                         i
                     }
                 }
             };
             drop.set_selected(at as u32);
+            chosen.set(at as u32);
             quiet.set(false);
             custom.set_visible(false);
-            grow(&custom);
+            drop.set_visible(true);
             on_pick(v);
         });
     }
-    let col = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).hexpand(true).build();
+    let keys = gtk::EventControllerKey::new();
+    // Before the sheet's own Esc, which would close it.
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let cancel = cancel.clone();
+        keys.connect_key_pressed(move |_, k, _, _| {
+            if k == gtk::gdk::Key::Escape {
+                cancel();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    entry.add_controller(keys);
+    let focus = gtk::EventControllerFocus::new();
+    focus.connect_leave(move |_| {
+        let cancel = cancel.clone();
+        // After Enter has had its turn.
+        glib::idle_add_local_once(move || cancel());
+    });
+    entry.add_controller(focus);
+    let col = gtk::Box::builder().hexpand(true).build();
     col.append(&drop);
     col.append(&custom);
     col
@@ -716,6 +792,7 @@ impl Calendar {
         st["view"] = json!(self.view);
         st["cursor"] = json!(self.cursor);
         st["narrow"] = json!(self.narrow);
+        st["year_ok"] = json!(true);
         st["sunday_first"] = json!(uuob_kit_gtk::sunday_first(&self.client));
         st["hour12"] = json!(uuob_kit_gtk::hour12(&self.client));
         st["now"] = json!(zones::now_ms());
@@ -797,7 +874,12 @@ impl Calendar {
             w.rail_cals.append(&b);
         }
         w.tasks_check.set_active(screen["showTasks"] == json!(true));
-        w.title.set_markup(&format!("<b>{}</b> <span weight=\"normal\" alpha=\"62%\">{}</span>", s(&screen["title"], "month"), screen["title"]["year"]));
+        // The year view's title is the year alone.
+        if self.view == "year" {
+            w.title.set_markup(&format!("<b>{}</b>", screen["title"]["year"]));
+        } else {
+            w.title.set_markup(&format!("<b>{}</b> <span weight=\"normal\" alpha=\"62%\">{}</span>", s(&screen["title"], "month"), screen["title"]["year"]));
+        }
         clear(&w.switch);
         for v in arr(&screen["views"]) {
             let b = gtk::ToggleButton::builder().label(s(&v, "name")).active(s(&v, "id") == self.view).css_classes(["flat"]).build();
@@ -809,6 +891,9 @@ impl Calendar {
         if self.view == "month" {
             self.render_month(&screen, w, sender);
             w.body.set_visible_child_name("month");
+        } else if self.view == "year" {
+            self.render_year(&screen, w, sender);
+            w.body.set_visible_child_name("year");
         } else {
             self.render_week(&screen, w, sender);
             w.body.set_visible_child_name("week");
@@ -887,6 +972,85 @@ impl Calendar {
             }
         });
         w.hours.queue_draw();
+    }
+
+    /// The year as small squares, a day each (GitHub's activity graph): weeks
+    /// across, weekdays down, as deep in the accent as the day is booked (the
+    /// core's minutes: timed events, overlaps once). Narrow: the months one under another.
+    fn render_year(&self, screen: &Value, w: &Widgets, sender: &ComponentSender<Self>) {
+        clear(&w.year);
+        let y = &screen["year"];
+        let weeks: Vec<Vec<Value>> = arr(&y["weeks"]).iter().map(arr).collect();
+        let cell = |c: &Value, size: i32| -> gtk::Widget {
+            let other = c["other"] == json!(true);
+            let level = c["level"].as_i64().unwrap_or(0).clamp(0, 4);
+            let b = gtk::Button::builder().css_classes(["ycell", &format!("l{level}")]).width_request(size).height_request(size).build();
+            if other {
+                b.add_css_class("other");
+                b.set_sensitive(false);
+                return b.upcast();
+            }
+            if c["today"] == json!(true) {
+                b.add_css_class("today");
+            }
+            // All-day events add no hours; a dot still shows the day has something.
+            if c["allDay"] == json!(true) {
+                b.set_child(Some(&gtk::Box::builder().css_classes(["ydot"]).halign(gtk::Align::Center).valign(gtk::Align::Center).build()));
+            }
+            b.set_tooltip_text(Some(s(c, "hint")));
+            let (tx, d) = (sender.clone(), s(c, "date").to_string());
+            b.connect_clicked(move |_| tx.input(Msg::Day(d.clone())));
+            b.upcast()
+        };
+        if !self.narrow {
+            // As large as the width allows (the page's width once it has one).
+            let avail = w.body.width();
+            let size = if avail > 0 { ((avail - 64) / weeks.len().max(1) as i32 - 3).clamp(10, 22) } else { 13 };
+            let grid = gtk::Grid::builder().row_spacing(3).column_spacing(3).halign(gtk::Align::Start).build();
+            for m in arr(&y["months"]) {
+                let col = m["week"].as_i64().unwrap_or(0) as i32 + 1;
+                grid.attach(&gtk::Label::builder().label(s(&m, "name")).xalign(0.0).css_classes(["caption", "dim-label"]).build(), col, 0, 4, 1);
+            }
+            for (i, h) in arr(&screen["monthHeads"]).iter().enumerate() {
+                let d: String = h.as_str().unwrap_or("").chars().take(3).collect();
+                let shown = if ["Mon", "Wed", "Fri"].contains(&d.as_str()) { d } else { String::new() };
+                grid.attach(&gtk::Label::builder().label(shown).xalign(0.0).width_chars(4).css_classes(["caption", "dim-label"]).build(), 0, i as i32 + 1, 1, 1);
+            }
+            for (wk, week) in weeks.iter().enumerate() {
+                for (d, c) in week.iter().enumerate() {
+                    grid.attach(&cell(c, size), wk as i32 + 1, d as i32 + 1, 1, 1);
+                }
+            }
+            w.year.append(&grid);
+        } else {
+            let flow = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).column_spacing(18).row_spacing(18).min_children_per_line(1).max_children_per_line(4).homogeneous(true).build();
+            let flat: Vec<&Value> = weeks.iter().flatten().collect();
+            for m in 1..=12 {
+                let days: Vec<(usize, &&Value)> = flat.iter().enumerate().filter(|(_, c)| c["other"] != json!(true) && s(c, "date").get(5..7).and_then(|x| x.parse::<usize>().ok()) == Some(m)).collect();
+                let Some((first, _)) = days.first() else { continue };
+                let col = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
+                col.append(&gtk::Label::builder().label(MONTH_NAMES[m - 1]).xalign(0.0).css_classes(["heading", "dim-label"]).build());
+                let g = gtk::Grid::builder().row_spacing(2).column_spacing(2).build();
+                // Blanks before the 1st, so each weekday keeps its column.
+                let lead = first % 7;
+                for (k, (_, c)) in days.iter().enumerate() {
+                    let at = lead + k;
+                    g.attach(&cell(c, 16), (at % 7) as i32, (at / 7) as i32, 1, 1);
+                }
+                col.append(&g);
+                flow.append(&col);
+            }
+            w.year.append(&flow);
+        }
+        // The year's planned hours, and what the shades mean.
+        let legend = gtk::Box::builder().spacing(4).build();
+        legend.append(&gtk::Label::builder().label(format!("{} h planned", y["hours"].as_i64().unwrap_or(0))).hexpand(true).xalign(0.0).css_classes(["dim-label"]).build());
+        legend.append(&gtk::Label::builder().label("Less").css_classes(["caption", "dim-label"]).build());
+        for l in 0..5 {
+            legend.append(&gtk::Box::builder().css_classes(["ycell", "legend", &format!("l{l}")]).width_request(12).height_request(12).valign(gtk::Align::Center).build());
+        }
+        legend.append(&gtk::Label::builder().label("More").css_classes(["caption", "dim-label"]).build());
+        w.year.append(&legend);
     }
 
     fn render_month(&self, screen: &Value, w: &Widgets, sender: &ComponentSender<Self>) {
@@ -1281,6 +1445,7 @@ impl Calendar {
                         _ => {}
                     }
                 }
+                grow_sheet(&rep_box);
             })
         };
         *build_repeat.borrow_mut() = Some(br.clone());
@@ -1552,7 +1717,7 @@ impl Calendar {
         let key = if self.narrow { "narrow" } else { "wide" };
         // Tick the views the switch on top offers; it shows them shortest first.
         let on: Vec<String> = arr(&self.screen["views"]).iter().map(|v| s(v, "id").to_string()).collect();
-        let names = [("1d", "1 day"), ("2d", "2 days"), ("3d", "3 days"), ("4d", "4 days"), ("5d", "5 days"), ("6d", "6 days"), ("1w", "Week"), ("month", "Month")];
+        let names = [("1d", "1 day"), ("2d", "2 days"), ("3d", "3 days"), ("4d", "4 days"), ("5d", "5 days"), ("6d", "6 days"), ("1w", "Week"), ("month", "Month"), ("year", "Year")];
         let mut view_rows = vec![];
         for (i, (id, name)) in names.iter().enumerate() {
             let ticked = on.iter().any(|v| v == id);
@@ -1637,10 +1802,8 @@ impl relm4::Component for Calendar {
         let tasks_check = gtk::CheckButton::builder().label("Tasks with dates").css_classes(["cal-row", "tasks-check"]).build();
         let tx = sender.clone();
         tasks_check.connect_toggled(move |_| tx.input(Msg::ToggleTasks));
-        let settings = uuob_kit_gtk::btn("Settings", Some("settings"), &["settings-btn"]);
-        settings.set_halign(gtk::Align::Start);
-        settings.set_valign(gtk::Align::End);
-        settings.set_vexpand(true);
+        // Settings goes on the toggle's line at the sidebar's foot (the kit's footer).
+        let settings = uuob_kit_gtk::sidebar_row(Some(uuob_kit_gtk::icon("settings", 19, 1.75, "text2").upcast_ref()), "Settings", None, false);
         let tx = sender.clone();
         settings.connect_clicked(move |_| tx.input(Msg::Settings));
         let side = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).css_classes(["side-col"]).build();
@@ -1648,7 +1811,6 @@ impl relm4::Component for Calendar {
         side.append(&cals);
         side.append(&gtk::Label::builder().label("FROM OTHER APPS").xalign(0.0).css_classes(["section-label", "side-label", "other-apps"]).build());
         side.append(&tasks_check);
-        side.append(&settings);
         let side_view = adw::ToolbarView::new();
         // The window's buttons once, on the calendar's side.
         let sh = adw::HeaderBar::builder().show_title(false).show_end_title_buttons(false).build();
@@ -1669,11 +1831,8 @@ impl relm4::Component for Calendar {
         rail_tasks.connect_clicked(move |_| tx.input(Msg::ToggleTasks));
         rail.append(&rail_tasks);
         let rail_settings = uuob_kit_gtk::rail_icon("settings", "Settings (Ctrl+,)", false);
-        rail_settings.set_vexpand(true);
-        rail_settings.set_valign(gtk::Align::End);
         let tx = sender.clone();
         rail_settings.connect_clicked(move |_| tx.input(Msg::Settings));
-        rail.append(&rail_settings);
 
         // The main part: the header, then the week or the month.
         let title = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["large-title"]).build();
@@ -1724,6 +1883,8 @@ impl relm4::Component for Calendar {
         let body = gtk::Stack::new();
         body.add_named(&week, Some("week"));
         body.add_named(&gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&month).build(), Some("month"));
+        let year = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(14).css_classes(["year"]).build();
+        body.add_named(&gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&year).build(), Some("year"));
         let toast = adw::ToastOverlay::new();
         toast.set_child(Some(&body));
         let main_col = gtk::Box::builder().orientation(gtk::Orientation::Vertical).css_classes(["cal-main"]).build();
@@ -1734,6 +1895,8 @@ impl relm4::Component for Calendar {
         main_view.set_content(Some(&main_col));
         // The calendars on the left (a rail of their colours when folded or narrow), the calendar on the right.
         let scaffold = uuob_kit_gtk::SidebarScaffold::new("calendar", &side_view, &rail, &main_view);
+        scaffold.set_footer(&settings);
+        scaffold.set_rail_footer(&rail_settings);
         // Narrow windows: the phones' own switch and a header on two rows.
         let narrow_bp = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 720sp").expect("condition"));
         if let Some(lm) = top.layout_manager() {
@@ -1849,7 +2012,7 @@ impl relm4::Component for Calendar {
             upcoming_gen: 0,
             shown_today: today_s,
         };
-        let widgets = Widgets { root: root.clone(), cals, rail_cals, tasks_check, title, switch, body, heads, allday, columns, hours, grid_scroll, month, toast };
+        let widgets = Widgets { root: root.clone(), cals, rail_cals, tasks_check, title, switch, body, heads, allday, columns, hours, grid_scroll, month, year, toast };
         model.render(&widgets, &sender);
         // Open on the morning, once the grid has its height (behind the connect screen it has none yet).
         let adj = widgets.grid_scroll.vadjustment();
@@ -1910,7 +2073,7 @@ impl relm4::Component for Calendar {
                         return;
                     }
                     self.view = v;
-                    if self.view != "month" {
+                    if self.view != "month" && self.view != "year" {
                         morning(w);
                     }
                 }

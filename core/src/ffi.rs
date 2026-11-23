@@ -80,6 +80,18 @@ pub fn before_label(minutes: Option<i64>) -> String {
     upcoming::before_label(minutes)
 }
 
+/// What Custom… typed, as minutes before ("15:00", "90", "2h"); None when it isn't a time.
+#[uniffi::export]
+pub fn parse_before(text: String) -> Option<i64> {
+    upcoming::parse_before(&text)
+}
+
+/// Minutes before as Custom… shows them: "15:00".
+#[uniffi::export]
+pub fn before_hhmm(minutes: i64) -> String {
+    upcoming::before_hhmm(minutes)
+}
+
 #[uniffi::export]
 pub fn ago(ms: i64) -> String {
     app::ago(ms, crate::zones::now_ms())

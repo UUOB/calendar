@@ -20,7 +20,11 @@ struct CalendarView: View {
                 let pad: CGFloat = w < 640 ? 14 : 28
                 VStack(spacing: 0) {
                     Header(model: model, s: s, compact: w < 640)
-                    if s.view.string == "month" { MonthView(model: model, s: s) } else { WeekView(model: model, s: s) }
+                    switch s.view.string {
+                    case "month": MonthView(model: model, s: s)
+                    case "year": YearView(model: model, s: s)
+                    default: WeekView(model: model, s: s)
+                    }
                 }
                 .padding(.horizontal, pad).padding(.top, 26)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -33,6 +37,10 @@ struct CalendarView: View {
                 .onKeyPress(.rightArrow) { model.move(1); return .handled }
                 .onKeyPress("t") { model.cursor = today(); return .handled }
             }
+        } footer: {
+            SettingsFoot { model.settingsOpen = true }
+        } railFooter: {
+            RailButton("settings", help: "Settings (⌘,)") { model.settingsOpen = true }
         }
         // ⌘K, ⌘?, and C / ? where no field is typing (docs/design.md).
         .uuobKeys(CalendarMacApp.commands(model))
@@ -94,7 +102,6 @@ struct CalendarRail: View {
                 Ico("tasks", size: 19)
             } action: { model.toggleTasks() }
             Spacer()
-            RailButton("settings", help: "Settings (⌘,)") { model.settingsOpen = true }
         }
         .padding(.top, 4)
     }
@@ -156,13 +163,13 @@ struct Sidebar: View {
                         Ico("plus", size: 18, stroke: 2.2).foregroundStyle(Look.accent).frame(width: 30, height: 30).contentShape(Circle())
                     }
                     .menuStyle(.button).buttonStyle(IconButtonStyle()).menuIndicator(.hidden).fixedSize()
-                    .help("Add a calendar")
+                    .uuobHint("Add a calendar")
                 }
                 .padding(.leading, 8).padding(.bottom, 4)
                 ForEach(s.calendars.array) { c in CalRow(model: model, c: c) }
                 SectionLabel("From other apps").padding(.top, 28).padding(.leading, 8).padding(.bottom, 4)
                 HStack(spacing: 12) {
-                    Button { model.toggleTasks() } label: { Check(on: s.showTasks.bool, ring: Look.text2) }.buttonStyle(PressStyle()).help("Show tasks")
+                    Button { model.toggleTasks() } label: { Check(on: s.showTasks.bool, ring: Look.text2) }.buttonStyle(PressStyle()).uuobHint("Show tasks")
                     Text("Tasks with dates").font(.system(size: 15, weight: .medium))
                     Spacer()
                     if !s.showTasks.bool { Ico("lock", size: 14).foregroundStyle(Look.text3) }
@@ -170,13 +177,6 @@ struct Sidebar: View {
                 .padding(.horizontal, 8).padding(.vertical, 7)
             }
             .padding(.horizontal, 16).padding(.top, 20)
-        }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Button { model.settingsOpen = true } label: { IconLabel("settings", "Settings") }.buttonStyle(UuobButton(.quiet)).help("Settings (⌘,)")
-                Spacer()
-            }
-            .padding(.horizontal, 16).padding(.bottom, 4)
         }
     }
 }
@@ -189,14 +189,14 @@ struct CalRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Button { model.toggleCal(c.id) } label: { Check(on: !c.hidden.bool, ring: Palette.color(c.color.string)) }
-                .buttonStyle(PressStyle()).help("Show \(c.name.string)")
+                .buttonStyle(PressStyle()).uuobHint("Show \(c.name.string)")
             Text(c.name.string).font(.system(size: 15, weight: .medium)).lineLimit(1)
             Spacer(minLength: 0)
-            if c.subscribed.bool { Ico("link", size: 15).foregroundStyle(Look.text3).help("Subscribed to a link") }
-            if c.shared.bool { Ico("people", size: 15).foregroundStyle(Look.text3).help(c.note.string) }
+            if c.subscribed.bool { Ico("link", size: 15).foregroundStyle(Look.text3).uuobHint("Subscribed to a link") }
+            if c.shared.bool { Ico("people", size: 15).foregroundStyle(Look.text3).uuobHint(c.note.string) }
             Button { model.calSheet = c } label: { Ico("edit", size: 15) }
                 .buttonStyle(IconButtonStyle()).frame(width: 28, height: 28).opacity(hover ? 1 : 0)
-                .help(c.from.isNull ? "Edit" : "About this calendar")
+                .uuobHint(c.from.isNull ? "Edit" : "About this calendar")
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(hover ? Look.hover : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -215,7 +215,8 @@ struct Header: View {
     var menu: (() -> Void)?
 
     var body: some View {
-        let title = (Text(s.title.month.string).fontWeight(.bold) + Text(" \(s.title.year.text)").fontWeight(.regular).foregroundStyle(Look.text2))
+        // The year view's title is the year alone.
+        let title = (s.view.string == "year" ? Text(s.title.year.text).fontWeight(.bold) : Text(s.title.month.string).fontWeight(.bold) + Text(" \(s.title.year.text)").fontWeight(.regular).foregroundStyle(Look.text2))
             .font(.system(size: compact ? 26 : 34)).tracking(-0.85).lineLimit(1).minimumScaleFactor(0.6).layoutPriority(1)
         let menuButton = Group { if let menu { IconButton("menu", size: 20, help: "Calendars") { menu() } } }
         let switcher = Segmented(s.views.array.map { ($0.id, $0.name.string) }, selected: s.view.string) { model.show($0) }.fixedSize()
@@ -227,7 +228,7 @@ struct Header: View {
         let new = Button { model.newEventOn(nil) } label: {
             Ico("plus", size: 20, stroke: 2.2).foregroundStyle(.white).frame(width: 36, height: 36).background(Look.accent, in: Circle())
         }
-        .buttonStyle(PressStyle()).help("New event")
+        .buttonStyle(PressStyle()).uuobHint("New event")
         Group {
             if compact {
                 VStack(alignment: .leading, spacing: 10) {
@@ -414,9 +415,9 @@ struct DayColumn: View {
 
 /// How strongly an event is tinted with its calendar's colour, by kind: a
 /// meeting to join a little deeper, a repeating one a little lighter.
-func eventTint(_ e: J) -> Double { e.join.bool ? 0.32 : e.repeats.bool ? 0.15 : 0.24 }
+func eventTint(_ e: J) -> Double { tint(TintKind(e)).fill }
 /// Past events fade a little, declined ones more.
-func eventFade(_ e: J) -> Double { e.answer.string == "no" ? 0.45 : e.past.bool ? 0.6 : 1 }
+func eventFade(_ e: J) -> Double { tint(TintKind(e)).fade }
 
 /// `.event`: tinted, a bar of the calendar's colour on the left; an invitation
 /// not answered yet is an outline, "maybe" is striped, "no" is faded and struck through.
@@ -435,8 +436,15 @@ struct EventBlock: View {
         let room = max(1, Int((height - 5 - (place.isEmpty ? 0 : 15)) / 15))
         VStack(alignment: .leading, spacing: 1) {
             if short {
-                (Text(b.title.string).font(.system(size: 13, weight: .semibold)) + Text("  \(b.startTime.string)").font(.system(size: 12, weight: .medium)))
-                    .strikethrough(answer == "no").lineLimit(1)
+                HStack(spacing: 4) {
+                    (Text(b.title.string).font(.system(size: 13, weight: .semibold)) + Text("  \(b.startTime.string)").font(.system(size: 12, weight: .medium)))
+                        .strikethrough(answer == "no").lineLimit(1)
+                    // The kind's mark stays on a one-line block too, where there's room.
+                    if width >= 90 {
+                        if b.join.bool { Ico("video", size: 11, stroke: 2).opacity(0.85) }
+                        if b.repeats.bool { Ico("repeat", size: 10, stroke: 2).opacity(0.85) }
+                    }
+                }
             } else {
                 Text(b.title.string).font(.system(size: 13, weight: .semibold)).strikethrough(answer == "no").lineLimit(max(1, room - 1))
                 HStack(spacing: 4) {
@@ -519,7 +527,7 @@ struct AllDayPill: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(p.title.string)
+        .uuobHint(p.title.string)
     }
 }
 
@@ -632,5 +640,130 @@ struct MonthItem: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Settings on the toggle's line at the sidebar's foot; closes the sidebar
+/// shown over a narrow window first.
+struct SettingsFoot: View {
+    let open: () -> Void
+    @Environment(\.uuobClosePeek) private var closePeek
+    var body: some View {
+        SidebarRow(title: "Settings") { Ico("settings", size: 19).foregroundStyle(Look.text2) } action: { closePeek(); open() }
+            .uuobHint("Settings (⌘,)")
+    }
+}
+
+/// The year as small squares, a day each (GitHub's activity graph): weeks run
+/// across, weekdays down, each as deep in the accent colour as the day is booked
+/// (its timed events, overlaps counted once, from the core). A narrow window
+/// shows the months one under another instead.
+struct YearView: View {
+    @Bindable var model: CalendarModel
+    let s: J
+
+    var body: some View {
+        let y = s.year
+        let weeks = y.weeks.array.map { $0.array }
+        GeometryReader { geo in
+            VStack(alignment: .leading, spacing: 14) {
+                if geo.size.width >= 640 {
+                    wide(weeks, width: geo.size.width)
+                    Spacer(minLength: 0)
+                } else {
+                    ScrollView { months(weeks) }.scrollIndicators(.never)
+                }
+                legend(y)
+            }
+            .padding(.top, 18).padding(.bottom, 16)
+        }
+    }
+
+    /// 53 weeks by 7 days, months along the top, Mon, Wed and Fri at the side.
+    private func wide(_ weeks: [[J]], width: CGFloat) -> some View {
+        let label: CGFloat = 32, gap: CGFloat = 3
+        let n = CGFloat(max(weeks.count, 1))
+        let cell = max(6, min(22, (width - label - gap * n) / n))
+        let starts = s.year.months.array.map { ($0.week.int, $0.name.string) }
+        return VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .topLeading) {
+                ForEach(starts, id: \.0) { start in
+                    Text(start.1).font(.system(size: 12)).foregroundStyle(Look.text2).fixedSize()
+                        .offset(x: label + CGFloat(start.0) * (cell + gap))
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 16, alignment: .topLeading)
+            HStack(alignment: .top, spacing: gap) {
+                VStack(alignment: .leading, spacing: gap) {
+                    ForEach(Array(s.monthHeads.array.enumerated()), id: \.offset) { _, h in
+                        let d = String(h.string.prefix(3))
+                        Text(["Mon", "Wed", "Fri"].contains(d) ? d : "").font(.system(size: 11)).foregroundStyle(Look.text3)
+                            .frame(width: label - gap, height: cell, alignment: .leading)
+                    }
+                }
+                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                    VStack(spacing: gap) {
+                        ForEach(Array(week.enumerated()), id: \.offset) { _, c in YearCell(model: model, c: c).frame(width: cell, height: cell) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The twelve months as small grids, as many to a row as fit.
+    private func months(_ weeks: [[J]]) -> some View {
+        let days = weeks.flatMap { $0 }.enumerated().filter { !$0.element.other.bool }
+        let byMonth = Dictionary(grouping: days) { Int($0.element.date.string.dropFirst(5).prefix(2)) ?? 1 }
+        let names = DateFormatter().monthSymbols ?? []
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 18, alignment: .top)], alignment: .leading, spacing: 18) {
+            ForEach(byMonth.keys.sorted(), id: \.self) { m in
+                let ds = byMonth[m] ?? []
+                // Blanks before the 1st, so each weekday keeps its column.
+                let cells: [J?] = Array(repeating: nil, count: (ds.first?.offset ?? 0) % 7) + ds.map { Optional($0.element) }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(names.indices.contains(m - 1) ? names[m - 1] : "").font(.system(size: 13, weight: .semibold)).foregroundStyle(Look.text2)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 7), spacing: 2) {
+                        ForEach(Array(cells.enumerated()), id: \.offset) { _, c in
+                            if let c { YearCell(model: model, c: c).aspectRatio(1, contentMode: .fit) } else { Color.clear.aspectRatio(1, contentMode: .fit) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The year's planned hours, and what the shades mean.
+    private func legend(_ y: J) -> some View {
+        HStack(spacing: 4) {
+            Text("\(y.hours.int) h planned").font(.system(size: 13)).foregroundStyle(Look.text2)
+            Spacer()
+            Text("Less").font(.system(size: 12)).foregroundStyle(Look.text3).padding(.trailing, 2)
+            ForEach(0..<5, id: \.self) { RoundedRectangle(cornerRadius: 3, style: .continuous).fill(yearFill($0)).frame(width: 12, height: 12) }
+            Text("More").font(.system(size: 12)).foregroundStyle(Look.text3).padding(.leading, 2)
+        }
+    }
+}
+
+/// A shade of the accent for a day booked at `level` (0 nothing … 4 five hours or more).
+func yearFill(_ level: Int) -> Color {
+    level <= 0 ? Look.surface2 : Look.accent.opacity([0.28, 0.5, 0.75, 1][min(level, 4) - 1])
+}
+
+/// One day of the year view: its shade, a ring today, a dot for all-day
+/// events (which add no hours); its hint on hover, its day on a click.
+struct YearCell: View {
+    @Bindable var model: CalendarModel
+    let c: J
+
+    var body: some View {
+        let other = c.other.bool
+        let level = c.level.int
+        let shape = RoundedRectangle(cornerRadius: 3, style: .continuous)
+        shape.fill(other ? Color.clear : yearFill(level))
+            .overlay { if c.today.bool { shape.strokeBorder(Palette.color("red"), lineWidth: 1.5) } }
+            .overlay { if !other && c.allDay.bool { Circle().fill(level >= 3 ? Color.white.opacity(0.85) : Look.accent).scaleEffect(0.36) } }
+            .contentShape(shape)
+            .onTapGesture { if !other { model.day(c.date.string) } }
+            .uuobHint(other ? "" : c.hint.string)
     }
 }
