@@ -18,7 +18,7 @@ for mode in light dark; do
   click "Week"; shot week
   click "Month" && shot month
   # Year joins the switch from Settings (a version without it leaves this out).
-  cmd ","; click "Year"; esc
+  cmd ","; pointer 512 400 scroll -15; click "Year"; esc
   if click "Year"; then
     shot year
     # A day's hint: the first squares sit near the top left of the page.
@@ -29,14 +29,15 @@ for mode in light dark; do
   # The toggle's hint (an icon has no words to find; the window sits at 12,31, 1000 wide, 680 high).
   pointer 222 681; sleep 1; shot sidebar-hint
   cmd ","; shot settings
+  pointer 512 400 scroll -15; shot settings-end
   # Custom… puts a time in the menu's place: 15:00 is 15 hours before.
   if click "~before"; then
     key "Cus"; enter; shot alert-custom
     key "15:00"; enter; shot alert-set
   fi
   # A click on the window beside Settings closes it.
-  # Beside the sheet, on the window it covers (the screen is 1024 wide).
-  win "click at {70, 640}"; sleep 1.5; shot outside-click
+  # A real click beside the sheet, on the window it covers (the screen is 1024 wide).
+  pointer 70 600 left; sleep 1.5; shot outside-click
   esc
 done
 
