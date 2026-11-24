@@ -99,6 +99,12 @@ final class CalendarModel {
     var now = nowMs()
     var eventsKnown = false
     var prefsKnown = false
+    /// Changes to the view settings (hidden calendars, the switch) not yet
+    /// saved, and a count of every change: a reload keeps what is on screen
+    /// until the stored settings have caught up with it.
+    var prefsSaving = 0
+    var prefsEdits = 0
+    private var prefsQueue: Task<Void, Never>?
     var note = ""
     // What is open.
     var openCard: J?
@@ -192,6 +198,7 @@ final class CalendarModel {
     var emails: String { screen.emails.text }
 
     func reload() async {
+        let edits = prefsEdits
         var d = data
         if let cs = try? await client.containers() { d["containers"] = J(text: cs).value ?? [Any]() }
         let all = J(text: await client.all(collection: "events"))
@@ -212,8 +219,12 @@ final class CalendarModel {
         if prefsRead {
             let first = !prefsKnown
             prefsKnown = true
-            hidden = nil
-            views = nil
+            // What was read may be older than a tick made since (a change notice
+            // for the first of several quick clicks): keep that until it's saved.
+            if prefsSaving == 0 && edits == prefsEdits {
+                hidden = nil
+                views = nil
+            }
             if first && J(text: prefsOf(prefs: J(d["prefs"]).text)).show_tasks.bool {
                 if let t = try? await client.load(collection: "tasks", container: "tasks") { tasks = t }
             }
@@ -237,6 +248,18 @@ final class CalendarModel {
             try? await Task.sleep(for: .milliseconds(1500))
             guard gen == upcomingGen else { return }
             await client.upcoming(list: upcomingList(state: state()))
+        }
+    }
+
+    /// Saves a change to the view settings, one after another in the order made.
+    func savePrefs(_ work: @escaping @MainActor () async throws -> Void) {
+        prefsEdits += 1
+        prefsSaving += 1
+        let before = prefsQueue
+        prefsQueue = Task {
+            await before?.value
+            do { try await work() } catch { note = error.userMessage }
+            prefsSaving -= 1
         }
     }
 
@@ -341,7 +364,7 @@ final class CalendarModel {
         hidden = h
         let show = s.showTasks.bool
         let text = J(h).text
-        run { try await saveViewPrefs(uuob: self.client, hidden: text, showTasks: show) }
+        savePrefs { try await saveViewPrefs(uuob: self.client, hidden: text, showTasks: show) }
     }
 
     func toggleTasks() {
@@ -351,7 +374,7 @@ final class CalendarModel {
         if !on {
             showTasks = false
             tasks = "[]"
-            run { try await saveViewPrefs(uuob: self.client, hidden: h, showTasks: false) }
+            savePrefs { try await saveViewPrefs(uuob: self.client, hidden: h, showTasks: false) }
             return
         }
         // Showing tasks needs read access to the Tasks app's container.
@@ -453,7 +476,7 @@ final class CalendarModel {
         v[key] = J(text: switchWithList(slot: slot, list: J(list).text)).value
         views = v
         let text = J(v).text
-        run { try await saveSwitch(uuob: self.client, views: text) }
+        savePrefs { try await saveSwitch(uuob: self.client, views: text) }
     }
 
     func setSwitch(_ change: [String: Any]) {
@@ -464,7 +487,7 @@ final class CalendarModel {
         v[key] = slot
         views = v
         let text = J(v).text
-        run { try await saveSwitch(uuob: self.client, views: text) }
+        savePrefs { try await saveSwitch(uuob: self.client, views: text) }
     }
 
     func setBefore(_ b: Int64?) {

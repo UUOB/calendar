@@ -175,6 +175,9 @@ import app.uuob.kit.userMessage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -207,6 +210,11 @@ class CalendarModel(private val ctx: Context) {
   var now by mutableLongStateOf(System.currentTimeMillis())
   var eventsKnown by mutableStateOf(false)
   var prefsKnown by mutableStateOf(false)
+  /** Changes to the view settings not yet saved, and a count of every change:
+   *  a reload keeps what is on screen until the stored settings catch up. */
+  private val prefsSaving = java.util.concurrent.atomic.AtomicInteger()
+  private val prefsEdits = java.util.concurrent.atomic.AtomicInteger()
+  private val prefsLock = Mutex()
   var note by mutableStateOf("")
   // What is open.
   var card by mutableStateOf<JSONObject?>(null)
@@ -260,6 +268,7 @@ class CalendarModel(private val ctx: Context) {
   }
 
   suspend fun reload() {
+    val edits = prefsEdits.get()
     val d = JSONObject(data.toString())
     runCatching { d.put("containers", JSONArray(client.containers())) }
     val all = JSONObject(client.all("events"))
@@ -278,8 +287,12 @@ class CalendarModel(private val ctx: Context) {
     if (prefsRead) {
       val first = !prefsKnown
       prefsKnown = true
-      hidden = null
-      views = null
+      // What was read may be older than a tick made since (a change notice for
+      // the first of several quick clicks): keep that until it's saved.
+      if (prefsSaving.get() == 0 && edits == prefsEdits.get()) {
+        hidden = null
+        views = null
+      }
       if (first && JSONObject(app.uuob.calendar.core.prefsOf(d.getJSONArray("prefs").toString())).optBoolean("show_tasks")) {
         runCatching { tasks = client.load("tasks", "tasks") }
       }
@@ -307,6 +320,21 @@ class CalendarModel(private val ctx: Context) {
   fun newCalendar() {
     val n = screen.arr("calendars").size
     calSheet = JSONObject().put("name", "").put("color", COLORS[(n + 1) % COLORS.size])
+  }
+
+  /** Saves a change to the view settings, after any still being saved, in the order made. */
+  private fun savePrefs(work: suspend () -> Unit) {
+    prefsEdits.incrementAndGet()
+    prefsSaving.incrementAndGet()
+    Uuob.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+      try {
+        prefsLock.withLock { work() }
+      } catch (e: Exception) {
+        note = e.userMessage
+      } finally {
+        prefsSaving.decrementAndGet()
+      }
+    }
   }
 
   fun launch(work: suspend () -> Unit) {
@@ -399,7 +427,7 @@ class CalendarModel(private val ctx: Context) {
     if (id in h) h.remove(id) else h += id
     hidden = h
     val show = screen.optBoolean("showTasks")
-    launch { saveViewPrefs(client, JSONArray(h).toString(), show) }
+    savePrefs { saveViewPrefs(client, JSONArray(h).toString(), show) }
   }
 
   fun toggleTasks() {
@@ -408,7 +436,7 @@ class CalendarModel(private val ctx: Context) {
     if (!on) {
       showTasks = false
       tasks = "[]"
-      launch { saveViewPrefs(client, h, false) }
+      savePrefs { saveViewPrefs(client, h, false) }
       return
     }
     // Showing tasks needs read access to the Tasks app's container.
@@ -494,7 +522,7 @@ class CalendarModel(private val ctx: Context) {
     val slot = v.getJSONObject(key)
     change.keys().forEach { slot.put(it, change.get(it)) }
     views = v
-    launch { saveSwitch(client, v.toString()) }
+    savePrefs { saveSwitch(client, v.toString()) }
   }
 
   /** The switch's views for this kind of screen, as a list (kept in order by the core). */
@@ -503,7 +531,7 @@ class CalendarModel(private val ctx: Context) {
     val v = JSONObject(screen.optJSONObject("switch").toString())
     v.put(key, JSONObject(switchWithList(v.getJSONObject(key).toString(), JSONArray(list).toString())))
     views = v
-    launch { saveSwitch(client, v.toString()) }
+    savePrefs { saveSwitch(client, v.toString()) }
   }
 
   fun setBefore(b: Long?) {

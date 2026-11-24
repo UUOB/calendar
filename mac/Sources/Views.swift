@@ -189,7 +189,7 @@ struct CalRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Button { model.toggleCal(c.id) } label: { Check(on: !c.hidden.bool, ring: Palette.color(c.color.string)) }
-                .buttonStyle(PressStyle()).uuobHint("Show \(c.name.string)")
+                .buttonStyle(PressStyle()).uuobHint("\(c.hidden.bool ? "Show" : "Hide") \(c.name.string)")
             Text(c.name.string).font(.system(size: 15, weight: .medium)).lineLimit(1)
             Spacer(minLength: 0)
             if c.subscribed.bool { Ico("link", size: 15).foregroundStyle(Look.text3).uuobHint("Subscribed to a link") }

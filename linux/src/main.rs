@@ -81,6 +81,7 @@ pub enum Cmd {
     Loaded(Box<Value>),
     Tasks(Vec<Value>),
     Done,
+    PrefsSaved,
     Error(String),
     SubResult(Result<String, String>),
     ImportResult(Value),
@@ -96,6 +97,18 @@ pub struct Calendar {
     hidden: Option<Vec<String>>,
     show_tasks: Option<bool>,
     views: Option<Value>,
+    /// Changes to the view settings not yet saved, and a count of every change:
+    /// a reload keeps what is on screen until the stored settings catch up.
+    prefs_saving: u32,
+    prefs_edits: u32,
+    /// Saves of the view settings, one at a time.
+    prefs_lock: std::sync::Arc<relm4::tokio::sync::Mutex<()>>,
+    /// The calendar rows as last built (what they show apart from the ticks),
+    /// their ticks and rail dots: kept while only the ticks change, since a row
+    /// rebuilt under a resting pointer misses the next click.
+    cal_rows: String,
+    cal_ticks: Vec<(gtk::CheckButton, gtk::Button, gtk::Box)>,
+    cal_syncing: Rc<Cell<bool>>,
     tasks: Vec<Value>,
     screen: Value,
     events_known: bool,
@@ -783,6 +796,18 @@ fn icon_button(icon: &str, text: &str) -> gtk::Button {
 }
 
 impl Calendar {
+    /// Saves a change to the view settings, after any still being saved.
+    fn save_prefs(&mut self, sender: &ComponentSender<Self>, work: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.prefs_edits += 1;
+        self.prefs_saving += 1;
+        let lock = self.prefs_lock.clone();
+        sender.oneshot_command(async move {
+            let _one = lock.lock().await;
+            work.await;
+            Cmd::PrefsSaved
+        });
+    }
+
     fn main_id(&self) -> String {
         arr(&self.data["containers"]).iter().find(|c| c["main"] == json!(true)).map(|c| s(c, "id").to_string()).unwrap_or_else(|| "calendar".into())
     }
@@ -835,13 +860,43 @@ impl Calendar {
         let screen = app::screen(&self.state());
         self.view = s(&screen, "view").to_string();
         self.screen = screen.clone();
+        let cals = arr(&screen["calendars"]);
+        let rows = json!(cals.iter().map(|c| { let mut c = c.clone(); c["hidden"] = Value::Null; c }).collect::<Vec<_>>()).to_string();
+        if rows == self.cal_rows && self.cal_ticks.len() == cals.len() {
+            // Only the ticks changed: set them, without counting that as a click.
+            self.cal_syncing.set(true);
+            for (c, (check, rail, dot)) in cals.iter().zip(&self.cal_ticks) {
+                let on = c["hidden"] != json!(true);
+                let hint = format!("{} {}", if on { "Hide" } else { "Show" }, s(c, "name"));
+                check.set_active(on);
+                check.set_tooltip_text(Some(&hint));
+                if on { dot.add_css_class("on") } else { dot.remove_css_class("on") }
+                rail.set_tooltip_text(Some(&hint));
+            }
+            self.cal_syncing.set(false);
+        } else {
+            self.cal_rows = rows;
+            self.cal_ticks.clear();
+            self.build_cal_rows(w, sender, &cals);
+        }
+        self.render_rest(w, sender, screen);
+    }
+
+    fn build_cal_rows(&mut self, w: &Widgets, sender: &ComponentSender<Self>, cals: &[Value]) {
+        let mut checks = Vec::new();
         clear(&w.cals);
-        for c in arr(&screen["calendars"]) {
+        for c in cals {
             let row = gtk::Box::builder().spacing(12).css_classes(["cal-row"]).build();
             let check = gtk::CheckButton::builder().active(c["hidden"] != json!(true)).css_classes([format!("uuob-check-{}", s(&c, "color"))]).build();
             let id = s(&c, "id").to_string();
-            let tx = sender.clone();
-            check.connect_toggled(move |_| tx.input(Msg::ToggleCal(id.clone())));
+            let (tx, syncing) = (sender.clone(), self.cal_syncing.clone());
+            check.connect_toggled(move |_| {
+                if !syncing.get() {
+                    tx.input(Msg::ToggleCal(id.clone()));
+                }
+            });
+            check.set_tooltip_text(Some(&format!("{} {}", if c["hidden"] == json!(true) { "Show" } else { "Hide" }, s(&c, "name"))));
+            checks.push(check.clone());
             row.append(&check);
             row.append(&gtk::Label::builder().label(s(&c, "name")).hexpand(true).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["cal-name"]).build());
             if c["subscribed"] == json!(true) {
@@ -862,7 +917,7 @@ impl Calendar {
             w.cals.append(&gtk::ListBoxRow::builder().child(&row).activatable(false).build());
         }
         clear(&w.rail_cals);
-        for c in arr(&screen["calendars"]) {
+        for (c, check) in cals.iter().zip(checks) {
             let on = c["hidden"] != json!(true);
             let dot = gtk::Box::builder().width_request(16).height_request(16).halign(gtk::Align::Center).valign(gtk::Align::Center).css_classes(["rail-dot", &format!("rail-dot-{}", s(&c, "color"))]).build();
             if on {
@@ -872,7 +927,11 @@ impl Calendar {
             let (tx, id) = (sender.clone(), s(&c, "id").to_string());
             b.connect_clicked(move |_| tx.input(Msg::ToggleCal(id.clone())));
             w.rail_cals.append(&b);
+            self.cal_ticks.push((check, b, dot));
         }
+    }
+
+    fn render_rest(&mut self, w: &Widgets, sender: &ComponentSender<Self>, screen: Value) {
         w.tasks_check.set_active(screen["showTasks"] == json!(true));
         // The year view's title is the year alone.
         if self.view == "year" {
@@ -2004,6 +2063,12 @@ impl relm4::Component for Calendar {
             hidden: None,
             show_tasks: None,
             views: None,
+            prefs_saving: 0,
+            prefs_edits: 0,
+            prefs_lock: Default::default(),
+            cal_rows: String::new(),
+            cal_ticks: Vec::new(),
+            cal_syncing: Default::default(),
             tasks: vec![],
             screen: Value::Null,
             events_known: false,
@@ -2036,6 +2101,7 @@ impl relm4::Component for Calendar {
         };
         match msg {
             Msg::Reload => {
+                let edits = self.prefs_edits;
                 sender.oneshot_command(async move {
                     let containers = client.containers().await.ok();
                     let (events, complete) = client.all("events").await;
@@ -2046,7 +2112,7 @@ impl relm4::Component for Calendar {
                     let answers = get(client.load("answers", None).await);
                     let alerts = get(client.load("alerts", None).await);
                     let subs = get(client.load("subscriptions", None).await);
-                    Cmd::Loaded(Box::new(json!({ "containers": containers, "events": events, "complete": complete, "infos": infos, "first": first, "prefs": prefs, "answers": answers, "alerts": alerts, "subs": subs })))
+                    Cmd::Loaded(Box::new(json!({ "containers": containers, "events": events, "complete": complete, "infos": infos, "first": first, "prefs": prefs, "answers": answers, "alerts": alerts, "subs": subs, "edits": edits })))
                 });
                 return;
             }
@@ -2172,9 +2238,8 @@ impl relm4::Component for Calendar {
                 }
                 self.hidden = Some(h.clone());
                 let show = self.screen["showTasks"] == json!(true);
-                sender.oneshot_command(async move {
+                self.save_prefs(&sender, async move {
                     let _ = app::save_view_prefs(&client, &h, show).await;
-                    Cmd::Done
                 });
             }
             Msg::ToggleTasks => {
@@ -2201,9 +2266,8 @@ impl relm4::Component for Calendar {
                 }
                 self.show_tasks = Some(false);
                 self.tasks.clear();
-                sender.oneshot_command(async move {
+                self.save_prefs(&sender, async move {
                     let _ = app::save_view_prefs(&client, &h, false).await;
-                    Cmd::Done
                 });
             }
             Msg::CalSheet(c) => return self.show_cal_sheet(c, root, &sender),
@@ -2331,18 +2395,16 @@ impl relm4::Component for Calendar {
                     views[key.as_str()][k.as_str()] = v.clone();
                 }
                 self.views = Some(views.clone());
-                sender.oneshot_command(async move {
+                self.save_prefs(&sender, async move {
                     let _ = app::save_switch(&client, &views).await;
-                    Cmd::Done
                 });
             }
             Msg::SetViews(key, list) => {
                 let mut views = self.screen["switch"].clone();
                 views[key.as_str()] = app::with_list(&views[key.as_str()], &list);
                 self.views = Some(views.clone());
-                sender.oneshot_command(async move {
+                self.save_prefs(&sender, async move {
                     let _ = app::save_switch(&client, &views).await;
-                    Cmd::Done
                 });
             }
             Msg::SetBefore(b) => {
@@ -2400,8 +2462,12 @@ impl relm4::Component for Calendar {
                 if d["prefs"].is_array() {
                     let first = !self.prefs_known;
                     self.prefs_known = true;
-                    self.hidden = None;
-                    self.views = None;
+                    // What was read may be older than a tick made since (a change
+                    // notice for the first of several quick clicks): keep that until saved.
+                    if self.prefs_saving == 0 && d["edits"] == json!(self.prefs_edits) {
+                        self.hidden = None;
+                        self.views = None;
+                    }
                     if first && app::prefs_of(&arr(&d["prefs"]))["show_tasks"] == json!(true) {
                         // Tasks show: read them (access was given before).
                         let c = self.client.clone();
@@ -2430,6 +2496,10 @@ impl relm4::Component for Calendar {
                 self.show_tasks = Some(true);
             }
             Cmd::Done => return,
+            Cmd::PrefsSaved => {
+                self.prefs_saving -= 1;
+                return;
+            }
             Cmd::Error(e) => {
                 w.toast.add_toast(adw::Toast::new(&e));
                 return;
