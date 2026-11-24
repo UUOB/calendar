@@ -26,7 +26,8 @@ for mode in light dark; do
   fi
   click "Week"
   # The side panel's foot: Settings and the toggle on one line, the toggle's hint.
-  hover "Hide sidebar (⌃⌘S)" && shot sidebar-hint
+  # The toggle's hint (an icon has no words to find; the window sits at 12,31, 1000 wide, 680 high).
+  pointer 222 681; sleep 1; shot sidebar-hint
   cmd ","; shot settings
   # Custom… puts a time in the menu's place: 15:00 is 15 hours before.
   if click "~before"; then
