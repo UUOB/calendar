@@ -699,11 +699,6 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean, phone: Bo
   val switch = @Composable { mod: Modifier, fill: Boolean ->
     Segmented(vs.map { it.optString("name") }, vs.indexOfFirst { it.optString("id") == s.optString("view") }, mod, compact = fill) { model.show(vs[it].optString("id")) }
   }
-  val todayPill = @Composable {
-    Box(Modifier.height(32.dp).clip(Pill.shape).background(Tokens.surface2).clickable { model.cursor = today() }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
-      Text("Today", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-    }
-  }
   val nav = @Composable {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
       IconBtn("left", { model.move(-1) }, description = "Previous")
@@ -727,14 +722,13 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean, phone: Bo
       // The menu (the calendars' drawer) before the title on phones, as in every app's toolbar.
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (phone) IconBtn("menu", { model.calsOpen = true }, description = "Calendars")
-        titleText(Modifier.weight(1f)); todayPill(); new()
+        titleText(Modifier.weight(1f)); new()
       }
-      // A compact switch (at most four views), the arrows at the row's end.
+      // A compact switch (at most four views), then ‹ Today › at the row's end, as on a computer.
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         switch(Modifier, true)
         Spacer(Modifier.weight(1f))
-        IconBtn("left", { model.move(-1) }, description = "Previous")
-        IconBtn("right", { model.move(1) }, description = "Next")
+        nav()
       }
     }
   }
