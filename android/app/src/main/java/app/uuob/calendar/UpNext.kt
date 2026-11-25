@@ -14,6 +14,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.text.TextPaint
 import android.text.TextUtils
@@ -30,12 +31,13 @@ import java.util.Locale
  * last, a red line at the time now, and events for the whole day as a chip
  * above each day. It is drawn as one picture; a tap opens
  * Calendar. Drawn again when the list changes, the clock or time zone
- * changes, and every quarter of an hour while the phone is awake.
+ * changes, and at every five minutes on the clock while the phone is awake
+ * (and as soon as it wakes, if one passed while it slept).
  */
 class UpNext : AppWidgetProvider() {
   companion object {
     private const val REDRAW = "app.uuob.calendar.REDRAW"
-    private const val QUARTER = 15 * 60 * 1000L
+    private const val STEP = 5 * 60 * 1000L
 
     fun refresh(ctx: Context) {
       val m = AppWidgetManager.getInstance(ctx)
@@ -44,11 +46,19 @@ class UpNext : AppWidgetProvider() {
       tick(ctx, ids.isNotEmpty())
     }
 
-    /** Redraws every quarter of an hour (the line for now moves), only while the phone is awake. */
+    /**
+     * The next redraw, at the next five minutes on the clock (the line for now
+     * moves). It never wakes the phone: one due while it slept comes as soon as
+     * it wakes. Exact where Android allows it; a repeating, inexact one could
+     * come much later and leave the line at an old time until then.
+     */
     private fun tick(ctx: Context, on: Boolean) {
       val again = PendingIntent.getBroadcast(ctx, 1, Intent(ctx, UpNext::class.java).setAction(REDRAW), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
       val am = ctx.getSystemService(AlarmManager::class.java)
-      if (on) am.setInexactRepeating(AlarmManager.RTC, System.currentTimeMillis() + QUARTER, QUARTER, again) else am.cancel(again)
+      if (!on) return am.cancel(again)
+      val next = (System.currentTimeMillis() / STEP + 1) * STEP
+      if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) am.setExact(AlarmManager.RTC, next, again)
+      else am.setWindow(AlarmManager.RTC, next, 60_000L, again)
     }
 
     private fun draw(ctx: Context, m: AppWidgetManager, id: Int) {

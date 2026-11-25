@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The "Up next" widget (UpNext.kt). It redraws itself every quarter of an
-     hour while the phone is awake; this is a fallback. -->
+<!-- The "Up next" widget (UpNext.kt). It redraws itself every five minutes
+     while the phone is awake; this is a fallback. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/up_next_about"
     android:initialLayout="@layout/widget_up_next"

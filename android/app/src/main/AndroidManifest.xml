@@ -3,6 +3,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Alerts are this app's own notifications (AlertReceiver). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The widget's line for now redraws on time (UpNext.kt): given to calendars. -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
     <!-- The update button hands a downloaded update to the system installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- So this app can open UUOB (uuob://) for the user to allow the connection. -->
