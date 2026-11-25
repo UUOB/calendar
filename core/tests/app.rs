@@ -53,7 +53,7 @@ fn the_week_lays_out_overlaps_side_by_side() {
     with_device_zone("Europe/Prague", || {
         let sc = screen(&state());
         assert_eq!(sc["days"][0], json!("2026-11-16"));
-        assert_eq!(sc["title"], json!({ "month": "November", "year": 2026 }));
+        assert_eq!(sc["title"], json!({ "month": "November", "year": 2026, "date": "19.11" }));
         assert_eq!(sc["views"], json!([{ "id": "1w", "name": "Week" }, { "id": "month", "name": "Month" }]));
         let thu = &sc["columns"][3];
         assert_eq!(thu["today"], json!(true));
@@ -181,4 +181,25 @@ fn year_hint_reads_well() {
     assert_eq!(year_hint("2026-03-01", 0, 0), "Sun 1 Mar · Nothing planned");
     assert_eq!(year_hint("2026-03-02", 45, 1), "Mon 2 Mar · 45 min · 1 event");
     assert_eq!(year_hint("2026-03-04", 0, 1), "Wed 4 Mar · All-day only · 1 event");
+}
+
+#[test]
+fn dates_in_numbers_follow_the_chosen_format() {
+    assert_eq!(numeric_date("2026-11-05", "dmy"), "5.11");
+    assert_eq!(numeric_date("2026-11-05", "mdy"), "11/5");
+    assert_eq!(numeric_date("2026-03-05", "ymd"), "2026-03-05");
+    assert_eq!(numeric_date("2026-11-25", "anything"), "25.11");
+    with_device_zone("Europe/Prague", || {
+        let mut st = state();
+        st["prefs"].as_array_mut().unwrap().push(json!({ "id": "format", "date": "ymd" }));
+        let sc = screen(&st);
+        assert_eq!(sc["title"]["date"], json!("2026-11-19"));
+        assert_eq!(sc["dateFormat"], json!("ymd"));
+        let names: Vec<&str> = sc["dateFormats"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["19.11", "11/19", "2026-11-19"]);
+        // Something it doesn't know reads as the first.
+        st["prefs"].as_array_mut().unwrap().pop();
+        st["prefs"].as_array_mut().unwrap().push(json!({ "id": "format", "date": "nonsense" }));
+        assert_eq!(screen(&st)["dateFormat"], json!("dmy"));
+    });
 }

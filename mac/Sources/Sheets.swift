@@ -594,6 +594,13 @@ struct CalendarSettings: View {
         let before: Int64? = s.before.isNull ? nil : s.before.int64
         let current = before.map { String($0) } ?? "none"
         SettingsSheet(app: calendarApp, settings: model.settings, week: true) {
+            RowsLabel("Calendar")
+            // How a date is written in numbers (the title shows today's on a hover).
+            IconRow("calendar", last: true) {
+                Text("Date")
+                Spacer(minLength: 8)
+                Segmented(s.dateFormats.array.map { ($0.id, $0.name.string) }, selected: s.dateFormat.string) { model.setDateFormat($0) }
+            }
             RowsLabel("Views")
             // Tick the views the switch on top offers; it shows them shortest first.
             ForEach(Array(VIEWS.enumerated()), id: \.offset) { i, v in

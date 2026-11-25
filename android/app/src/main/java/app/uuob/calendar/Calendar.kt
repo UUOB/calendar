@@ -75,6 +75,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.LinkAnnotation
@@ -90,14 +91,6 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.foundation.text.KeyboardActions
-import app.uuob.calendar.core.parseBefore
-import app.uuob.calendar.core.beforeHhmm
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
@@ -121,6 +114,7 @@ import app.uuob.calendar.core.readFile
 import app.uuob.calendar.core.saveCalendar
 import app.uuob.calendar.core.saveDefaultAlert
 import app.uuob.calendar.core.saveEmails
+import app.uuob.calendar.core.saveDateFormat
 import app.uuob.calendar.core.saveEvent
 import app.uuob.calendar.core.saveSwitch
 import app.uuob.calendar.core.switchWithList
@@ -137,6 +131,7 @@ import app.uuob.kit.LocalDrawerMode
 import app.uuob.kit.Btn
 import app.uuob.kit.BtnKind
 import app.uuob.kit.Check
+import app.uuob.kit.NumberWheel
 import app.uuob.kit.IconRow
 import app.uuob.kit.DetailSheet
 import app.uuob.kit.EditSheet
@@ -534,6 +529,12 @@ class CalendarModel(private val ctx: Context) {
     savePrefs { saveSwitch(client, v.toString()) }
   }
 
+  /** How dates are written in numbers: "dmy", "mdy" or "ymd". */
+  fun setDateFormat(f: String) {
+    replace("prefs", "format", JSONObject().put("date", f))
+    launch { saveDateFormat(client, f) }
+  }
+
   fun setBefore(b: Long?) {
     replace("prefs", "alerts", JSONObject().put("before", b ?: JSONObject.NULL))
     scheduleUpcoming()
@@ -711,16 +712,22 @@ private fun Sidebar(model: CalendarModel, s: JSONObject, updater: Updater, files
 @Composable
 private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean, phone: Boolean) {
   val title = s.getJSONObject("title")
+  // Held down, the title shows today's date in numbers until it's let go.
+  var dated by remember { mutableStateOf(false) }
   val titleText = @Composable { mod: Modifier ->
     Text(
       buildAnnotatedString {
-        if (s.optString("view") == "year") withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("${title.optInt("year")}") }
+        if (dated) {
+          withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(title.optString("date")) }
+          if (s.optString("dateFormat") != "ymd") withStyle(SpanStyle(fontWeight = FontWeight.Normal, color = Tokens.text2)) { append(" ${title.optInt("year")}") }
+        } else if (s.optString("view") == "year") withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("${title.optInt("year")}") }
         else {
           withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(title.optString("month")) }
           withStyle(SpanStyle(fontWeight = FontWeight.Normal, color = Tokens.text2)) { append(" ${title.optInt("year")}") }
         }
       },
-      mod, fontSize = if (wide) 34.sp else 28.sp, letterSpacing = (-0.8).sp, maxLines = 1,
+      mod.pointerInput(Unit) { detectTapGestures(onLongPress = { dated = true }, onPress = { tryAwaitRelease(); dated = false }) },
+      fontSize = if (wide) 34.sp else 28.sp, letterSpacing = (-0.8).sp, maxLines = 1,
     )
   }
   val vs = s.arr("views")
@@ -765,23 +772,22 @@ private fun Header(model: CalendarModel, s: JSONObject, wide: Boolean, phone: Bo
 /** `color-mix(in srgb, a p%, b)`. */
 private fun mix(a: Color, p: Float, b: Color) = Color(a.red * p + b.red * (1 - p), a.green * p + b.green * (1 - p), a.blue * p + b.blue * (1 - p), 1f)
 
-/** The look of an event by your answer: invited is an outline, maybe striped, no faded and struck through. */
 /** How strongly an event is tinted, by kind: a meeting to join a little deeper, a repeating one lighter. */
 private fun tintOf(e: JSONObject, base: Float = 0.24f): Float = tint(TintKind.of(e).copy(allDay = base < 0.24f)).fill
 /** Past events fade a little, declined ones more. */
 private fun fadeOf(e: JSONObject): Float = tint(TintKind.of(e)).fade
 
+/** The look of an event by your answer: an invitation is striped (outlined until you answer), no faded and struck through. */
 @Composable
 private fun Modifier.eventLook(c: Color, answer: String?, strength: Float, shape: RoundedCornerShape): Modifier {
   val bg = MaterialTheme.colorScheme.background
   return when (answer) {
-    "invited" -> this.background(bg, shape).border(1.dp, c.copy(alpha = 0.7f), shape)
-    "maybe" -> this.drawBehind {
+    "invited", "maybe" -> this.drawBehind {
       val a = mix(c, 0.26f, bg); val b = mix(c, 0.12f, bg)
       drawRect(b)
       val step = 12.dp.toPx(); var x = -size.height
       while (x < size.width) { drawLine(a, Offset(x, size.height), Offset(x + size.height, 0f), strokeWidth = 6.dp.toPx() / 1.414f); x += step / 1.414f * 1.414f }
-    }
+    }.then(if (answer == "invited") Modifier.border(1.dp, c.copy(alpha = 0.7f), shape) else Modifier)
     else -> this.background(mix(c, strength, bg), shape)
   }
 }
@@ -1141,26 +1147,23 @@ private fun AlertPick(options: List<JSONObject>, current: String, plain: Boolean
   val listed = if (known.any { it.first == current } || current.toLongOrNull() == null) known else known + (current to beforeLabel(current.toLong()))
   Select(listed + ("custom" to "Custom…"), current, plain = plain) { v -> if (v == "custom") custom = true else onPick(v) }
   if (custom) {
-    val before = beforeHhmm(current.toLongOrNull()?.coerceAtLeast(0) ?: 15L)
-    var text by remember { mutableStateOf(TextFieldValue(before, TextRange(0, before.length))) }
-    val focus = remember { FocusRequester() }
-    // A time sets it; anything else goes back to what was there.
-    val done = { parseBefore(text.text)?.let { onPick(it.toString()); custom = false } ?: run { text = TextFieldValue(before, TextRange(0, before.length)) } }
+    // Three wheels: days, hours and minutes before, opening on the alert there is.
+    val m = current.toLongOrNull()?.coerceAtLeast(0) ?: 15L
+    var d by remember { mutableStateOf((m / 1440).toInt().coerceAtMost(7)) }
+    var h by remember { mutableStateOf(((m % 1440) / 60).toInt()) }
+    // Minutes in steps of 5, rounded up: an alert typed on the Mac as 3 minutes opens at 5.
+    var mi by remember { mutableStateOf((((m % 60) + 4) / 5 * 5).toInt().coerceAtMost(55)) }
     WebSheet({ custom = false }, padding = 22.dp) {
       Text("Alert", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp)
-      Row(Modifier.fillMaxWidth().padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        WebField(
-          text, { text = it }, Modifier.weight(1f).focusRequester(focus), placeholder = "h:mm",
-          textStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center),
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-          keyboardActions = KeyboardActions(onDone = { done() }),
-        )
-        Text("before", fontSize = 17.sp, color = Tokens.text2)
+      Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        NumberWheel((0..7).toList(), d, "days", { d = it }, Modifier.weight(1f))
+        NumberWheel((0..23).toList(), h, "hours", { h = it }, Modifier.weight(1f))
+        NumberWheel((0..55 step 5).toList(), mi, "minutes", { mi = it }, Modifier.weight(1f))
       }
-      Text("Hours and minutes, like 15:00 or 0:30", fontSize = 13.sp, color = Tokens.text3, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
-      Btn("Done", { done() }, Modifier.fillMaxWidth().padding(top = 18.dp), kind = BtnKind.Primary, lg = true)
+      Text("before the event", color = Tokens.text2, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 14.dp))
+      val total = minOf(d * 1440L + h * 60L + mi, 7 * 1440L)
+      Btn("Done", { if (total > 0) onPick(total.toString()); custom = false }, Modifier.fillMaxWidth().padding(top = 18.dp), kind = BtnKind.Primary, lg = true, enabled = total > 0)
     }
-    LaunchedEffect(Unit) { focus.requestFocus() }
   }
 }
 
@@ -1495,6 +1498,14 @@ private fun CalendarSettings(model: CalendarModel, s: JSONObject) {
   val sw = s.getJSONObject("switch").getJSONObject(key)
   val three = sw.optBoolean("three")
   SettingsSheet(onClose = { model.settingsOpen = false }, week = true) {
+    SettingsGroup("Calendar") {
+      // How a date is written in numbers (holding the title shows today's).
+      val formats = s.arr("dateFormats")
+      IconRow("calendar", last = true) {
+        Text("Date", fontSize = 15.sp, modifier = Modifier.weight(1f))
+        Segmented(formats.map { it.optString("name") }, formats.indexOfFirst { it.optString("id") == s.optString("dateFormat") }.coerceAtLeast(0)) { model.setDateFormat(formats[it].optString("id")) }
+      }
+    }
     SettingsGroup("Views") {
       val on = s.arr("views").map { it.optString("id") }
       // At most four: the switch stays small.

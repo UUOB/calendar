@@ -9,6 +9,7 @@
 //!   first calendar    `calendars/personal {name, color}` in the first container
 //!   added calendar    `calendar/info {color, created, subscribed?, …}` in its own
 //!   preferences       `prefs/alerts {before}`, `prefs/me {emails}`, `prefs/views {narrow, wide}`,
+//!                     `prefs/format {date: dmy | mdy | ymd}`,
 //!                     `prefs/calendar {show_tasks, hidden}` (first container)
 //!   private per event `answers/<key> {answer}`, `alerts/<key> {before: minutes | false}`
 //!   links             `subscriptions/<calendar> {url, refreshed}`
@@ -60,7 +61,24 @@ pub fn view_label(v: &str) -> String {
     VIEWS.iter().find(|x| x.0 == v).map_or(v.to_string(), |x| x.1.to_string())
 }
 
-/// The preferences, read: { hidden, show_tasks, views, before, emails }.
+/// How a date is written in numbers: 25.11, 11/25 or 2026-11-25.
+pub const DATE_FORMATS: [&str; 3] = ["dmy", "mdy", "ymd"];
+
+/// `date` (YYYY-MM-DD) in numbers, by `format` (`DATE_FORMATS`; anything else is dmy).
+pub fn numeric_date(date: &str, format: &str) -> String {
+    let (y, m, d) = zones::ymd(date);
+    match format {
+        "mdy" => format!("{m}/{d}"),
+        "ymd" => format!("{y:04}-{m:02}-{d:02}"),
+        _ => format!("{d}.{m}"),
+    }
+}
+
+pub async fn save_date_format(c: &Client, format: &str) -> Result<(), uuob_client::Error> {
+    c.put("prefs", None, Some("format"), json!({ "date": format })).await.map(drop)
+}
+
+/// The preferences, read: { hidden, show_tasks, views, before, emails, date_format }.
 pub fn prefs_of(prefs: &[Json]) -> Json {
     let cal = find(prefs, "calendar");
     let alerts = find(prefs, "alerts");
@@ -84,6 +102,7 @@ pub fn prefs_of(prefs: &[Json]) -> Json {
         "views": views,
         "before": before,
         "emails": find(prefs, "me").and_then(|m| m.get("emails")).cloned().unwrap_or(json!([])),
+        "date_format": find(prefs, "format").and_then(|f| f.get("date")).and_then(Json::as_str).filter(|f| DATE_FORMATS.contains(f)).unwrap_or("dmy"),
     })
 }
 
@@ -493,7 +512,9 @@ pub fn screen(st: &Json) -> Json {
     json!({
         "view": view, "views": segs.iter().map(|v| json!({ "id": v, "name": view_label(v) })).collect::<Vec<_>>(),
         "dayView": day_view, "fitted": fitted, "cursor": cursor, "today": t, "nowMinute": now_minute.0 * 60 + now_minute.1,
-        "title": { "month": MONTHS[(tm - 1) as usize], "year": ty },
+        // `date`: today in numbers, shown in the title's place on a hover.
+        "title": { "month": MONTHS[(tm - 1) as usize], "year": ty, "date": numeric_date(&t, p["date_format"].as_str().unwrap_or("dmy")) },
+        "dateFormat": p["date_format"], "dateFormats": DATE_FORMATS.iter().map(|f| json!({ "id": f, "name": numeric_date(&t, f) })).collect::<Vec<_>>(),
         "calendars": cals.iter().map(|c| { let off = hidden.iter().any(|h| Some(h.as_str()) == s(c, "id")); let mut c = c.clone(); c["hidden"] = json!(off); c }).collect::<Vec<_>>(),
         "days": if is_year { json!([]) } else { json!(days) }, "columns": columns, "cells": cells, "monthHeads": heads, "year": year,
         "showTasks": show_tasks, "hidden": hidden, "switch": views,

@@ -206,6 +206,36 @@ struct CalRow: View {
 
 // MARK: - Header
 
+/// The big title: the month and year (the year alone in the year view).
+/// Rested on for a moment, it shows today's date in numbers in the
+/// format chosen in Settings (25.11 2026), until the pointer leaves.
+struct DateTitle: View {
+    let s: J
+    var compact = false
+    @State private var showDate = false
+    @State private var wait: Task<Void, Never>?
+
+    var body: some View {
+        let year = Text(" \(s.title.year.text)").fontWeight(.regular).foregroundStyle(Look.text2)
+        let text = showDate
+            ? Text(s.title.date.string).fontWeight(.bold) + (s.dateFormat.string == "ymd" ? Text("") : year)
+            : s.view.string == "year" ? Text(s.title.year.text).fontWeight(.bold) : Text(s.title.month.string).fontWeight(.bold) + year
+        text.font(.system(size: compact ? 26 : 34)).tracking(-0.85).lineLimit(1).minimumScaleFactor(0.6).layoutPriority(1)
+            .monospacedDigit()
+            .onHover { inside in
+                wait?.cancel()
+                if inside {
+                    wait = Task {
+                        try? await Task.sleep(for: .milliseconds(600))
+                        if !Task.isCancelled { showDate = true }
+                    }
+                } else {
+                    showDate = false
+                }
+            }
+    }
+}
+
 struct Header: View {
     @Bindable var model: CalendarModel
     let s: J
@@ -215,9 +245,7 @@ struct Header: View {
     var menu: (() -> Void)?
 
     var body: some View {
-        // The year view's title is the year alone.
-        let title = (s.view.string == "year" ? Text(s.title.year.text).fontWeight(.bold) : Text(s.title.month.string).fontWeight(.bold) + Text(" \(s.title.year.text)").fontWeight(.regular).foregroundStyle(Look.text2))
-            .font(.system(size: compact ? 26 : 34)).tracking(-0.85).lineLimit(1).minimumScaleFactor(0.6).layoutPriority(1)
+        let title = DateTitle(s: s, compact: compact)
         let menuButton = Group { if let menu { IconButton("menu", size: 20, help: "Calendars") { menu() } } }
         let switcher = Segmented(s.views.array.map { ($0.id, $0.name.string) }, selected: s.view.string) { model.show($0) }.fixedSize()
         let nav = HStack(spacing: 2) {
@@ -420,7 +448,7 @@ func eventTint(_ e: J) -> Double { tint(TintKind(e)).fill }
 func eventFade(_ e: J) -> Double { tint(TintKind(e)).fade }
 
 /// `.event`: tinted, a bar of the calendar's colour on the left; an invitation
-/// not answered yet is an outline, "maybe" is striped, "no" is faded and struck through.
+/// invitation is striped (and outlined until you answer), "no" is faded and struck through.
 /// Repeating events are lighter, meetings to join deeper with a camera, past ones faded.
 struct EventBlock: View {
     let b: J
@@ -477,9 +505,7 @@ struct BlockFill: View {
     var tint = 0.24
     var body: some View {
         switch answer {
-        case "invited":
-            Look.bg
-        case "maybe":
+        case "invited", "maybe":
             let light = Palette.mix(color, toward: Palette.bg, 0.88), dark = Palette.mix(color, toward: Palette.bg, 0.74)
             Canvas { ctx, size in
                 ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(light))

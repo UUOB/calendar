@@ -490,6 +490,12 @@ final class CalendarModel {
         savePrefs { try await saveSwitch(uuob: self.client, views: text) }
     }
 
+    /// How dates are written in numbers: "dmy", "mdy" or "ymd".
+    func setDateFormat(_ f: String) {
+        replace("prefs", "format", ["date": f])
+        run { try await saveDateFormat(uuob: self.client, format: f) }
+    }
+
     func setBefore(_ b: Int64?) {
         replace("prefs", "alerts", ["before": b.map { $0 as Any } ?? NSNull()])
         scheduleUpcoming()

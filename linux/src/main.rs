@@ -71,6 +71,7 @@ pub enum Msg {
     /// The switch's views for this kind of screen, as a list.
     SetViews(String, Vec<String>),
     SetBefore(Option<i64>),
+    SetDateFormat(String),
     ForgetAddress(String),
     Note(String),
     Upcoming(u64),
@@ -125,6 +126,10 @@ pub struct Widgets {
     rail_cals: gtk::Box,
     tasks_check: gtk::CheckButton,
     title: gtk::Label,
+    /// The title as it reads, and as it reads rested on (today's date in numbers).
+    title_marks: Rc<RefCell<(String, String)>>,
+    /// The date shows in the title's place.
+    title_dated: Rc<Cell<bool>>,
     switch: gtk::Box,
     body: gtk::Stack,
     heads: gtk::Box,
@@ -271,16 +276,9 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                 if declined || past {
                     cr.push_group();
                 }
-                // Not answered yet: an outline; maybe: stripes; otherwise a tint (`.event`).
+                // An invitation: stripes, outlined until answered; otherwise a tint (`.event`).
                 match answer {
-                    "invited" => {
-                        cr.set_source_rgb(pr, pg, pb);
-                        cr.paint().ok();
-                        cr.set_source_rgba(r, g, bl, 0.7);
-                        rounded(cr, x + 0.5, y + 0.5, bw - 1.0, bh - 1.0, 7.0);
-                        let _ = cr.stroke();
-                    }
-                    "maybe" => {
+                    "invited" | "maybe" => {
                         let (a1, a2) = (mixed(0.26), mixed(0.12));
                         cr.set_source_rgb(a2.0, a2.1, a2.2);
                         cr.paint().ok();
@@ -294,6 +292,11 @@ fn day_column(col: Value, now_minute: i64, hour12: bool, sender: &ComponentSende
                         }
                         let _ = cr.stroke();
                         cr.set_line_width(1.0);
+                        if answer == "invited" {
+                            cr.set_source_rgba(r, g, bl, 0.7);
+                            rounded(cr, x + 0.5, y + 0.5, bw - 1.0, bh - 1.0, 7.0);
+                            let _ = cr.stroke();
+                        }
                     }
                     _ => {
                         let m = mixed(tint);
@@ -933,12 +936,13 @@ impl Calendar {
 
     fn render_rest(&mut self, w: &Widgets, sender: &ComponentSender<Self>, screen: Value) {
         w.tasks_check.set_active(screen["showTasks"] == json!(true));
-        // The year view's title is the year alone.
-        if self.view == "year" {
-            w.title.set_markup(&format!("<b>{}</b>", screen["title"]["year"]));
-        } else {
-            w.title.set_markup(&format!("<b>{}</b> <span weight=\"normal\" alpha=\"62%\">{}</span>", s(&screen["title"], "month"), screen["title"]["year"]));
-        }
+        // The year view's title is the year alone. Rested on, it shows today's
+        // date in numbers (the year after it unless the format has one).
+        let year = format!(" <span weight=\"normal\" alpha=\"62%\">{}</span>", screen["title"]["year"]);
+        let plain = if self.view == "year" { format!("<b>{}</b>", screen["title"]["year"]) } else { format!("<b>{}</b>{year}", s(&screen["title"], "month")) };
+        let dated = format!("<b>{}</b>{}", s(&screen["title"], "date"), if s(&screen, "dateFormat") == "ymd" { "" } else { year.as_str() });
+        w.title.set_markup(if w.title_dated.get() { &dated } else { &plain });
+        *w.title_marks.borrow_mut() = (plain, dated);
         clear(&w.switch);
         for v in arr(&screen["views"]) {
             let b = gtk::ToggleButton::builder().label(s(&v, "name")).active(s(&v, "id") == self.view).css_classes(["flat"]).build();
@@ -1792,6 +1796,13 @@ impl Calendar {
             view_rows.push(uuob_kit_gtk::icon_setting_row(if i == 0 { Some("calendar") } else { None }, name, &check).upcast());
         }
         let views = uuob_kit_gtk::group("Views", "", view_rows);
+        // How a date is written in numbers (the title shows today's on a hover).
+        let formats = arr(&self.screen["dateFormats"]);
+        let names: Vec<String> = formats.iter().map(|f| s(f, "name").to_string()).collect();
+        let at = formats.iter().position(|f| s(f, "id") == s(&self.screen, "dateFormat")).unwrap_or(0);
+        let (tx, ids) = (sender.clone(), formats.iter().map(|f| s(f, "id").to_string()).collect::<Vec<_>>());
+        let pick = uuob_kit_gtk::segmented(&names.iter().map(String::as_str).collect::<Vec<_>>(), at, move |i| tx.input(Msg::SetDateFormat(ids[i].clone())));
+        let calendar = uuob_kit_gtk::group("Calendar", "", vec![uuob_kit_gtk::icon_setting_row(Some("calendar"), "Date", &pick).upcast()]);
         let before = self.screen["before"].as_i64();
         let tx = sender.clone();
         let current = before.map_or("none".to_string(), |b| b.to_string());
@@ -1811,7 +1822,7 @@ impl Calendar {
         }
         let events = uuob_kit_gtk::group("Events", "", rows);
         let tx = sender.clone();
-        uuob_kit_gtk::settings_dialog(&self.info, &self.client, true, vec![views, events], move || tx.input(Msg::Redraw)).present(Some(root));
+        uuob_kit_gtk::settings_dialog(&self.info, &self.client, true, vec![calendar, views, events], move || tx.input(Msg::Redraw)).present(Some(root));
     }
 }
 
@@ -1895,6 +1906,31 @@ impl relm4::Component for Calendar {
 
         // The main part: the header, then the week or the month.
         let title = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["large-title"]).build();
+        let title_marks: Rc<RefCell<(String, String)>> = Rc::default();
+        let title_dated = Rc::new(Cell::new(false));
+        {
+            // Rested on for a moment, the title shows today's date; it goes back when the pointer leaves.
+            let hover = gtk::EventControllerMotion::new();
+            let rests = Rc::new(Cell::new(0u32));
+            let (t, marks, dated, r) = (title.clone(), title_marks.clone(), title_dated.clone(), rests.clone());
+            hover.connect_enter(move |_, _, _| {
+                r.set(r.get() + 1);
+                let (t, marks, dated, r, at) = (t.clone(), marks.clone(), dated.clone(), r.clone(), r.get());
+                glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
+                    if r.get() == at {
+                        dated.set(true);
+                        t.set_markup(&marks.borrow().1);
+                    }
+                });
+            });
+            let (t, marks, dated, r) = (title.clone(), title_marks.clone(), title_dated.clone(), rests);
+            hover.connect_leave(move |_| {
+                r.set(r.get() + 1);
+                dated.set(false);
+                t.set_markup(&marks.borrow().0);
+            });
+            title.add_controller(hover);
+        }
         let switch = gtk::Box::builder().spacing(2).valign(gtk::Align::Center).css_classes(["segmented"]).build();
         let prev = uuob_kit_gtk::icon_btn("left", 22, "Previous");
         let today = uuob_kit_gtk::btn("Today", None, &["sm"]);
@@ -2077,7 +2113,7 @@ impl relm4::Component for Calendar {
             upcoming_gen: 0,
             shown_today: today_s,
         };
-        let widgets = Widgets { root: root.clone(), cals, rail_cals, tasks_check, title, switch, body, heads, allday, columns, hours, grid_scroll, month, year, toast };
+        let widgets = Widgets { root: root.clone(), cals, rail_cals, tasks_check, title, title_marks, title_dated, switch, body, heads, allday, columns, hours, grid_scroll, month, year, toast };
         model.render(&widgets, &sender);
         // Open on the morning, once the grid has its height (behind the connect screen it has none yet).
         let adj = widgets.grid_scroll.vadjustment();
@@ -2405,6 +2441,16 @@ impl relm4::Component for Calendar {
                 self.views = Some(views.clone());
                 self.save_prefs(&sender, async move {
                     let _ = app::save_switch(&client, &views).await;
+                });
+            }
+            Msg::SetDateFormat(f) => {
+                let mut prefs = arr(&self.data["prefs"]);
+                prefs.retain(|x| s(x, "id") != "format");
+                prefs.push(json!({ "id": "format", "date": f }));
+                self.data["prefs"] = json!(prefs);
+                sender.oneshot_command(async move {
+                    let _ = app::save_date_format(&client, &f).await;
+                    Cmd::Done
                 });
             }
             Msg::SetBefore(b) => {

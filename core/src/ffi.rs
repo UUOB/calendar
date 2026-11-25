@@ -176,6 +176,12 @@ pub async fn save_default_alert(uuob: Arc<UuobClient>, before: Option<i64>) -> R
     app::save_default_alert(uuob.inner(), before).await
 }
 
+/// How dates are written in numbers: "dmy", "mdy" or "ymd".
+#[uniffi::export]
+pub async fn save_date_format(uuob: Arc<UuobClient>, format: String) -> Result<(), uuob_client::Error> {
+    app::save_date_format(uuob.inner(), &format).await
+}
+
 #[uniffi::export]
 pub async fn save_emails(uuob: Arc<UuobClient>, emails: String) -> Result<(), uuob_client::Error> {
     app::save_emails(uuob.inner(), &strings(&emails)).await
