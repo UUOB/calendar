@@ -28,15 +28,25 @@ for arch in arm64; do
     -o "$build/Calendar-$arch"
 done
 
-# 4. Calendar.app, signed for this Mac only (no paid Apple account: macOS asks once, "Open Anyway").
+# 4. The "Up next" widget (mac/Widget), an extension inside the app.
+ext="$app/Contents/PlugIns/UpNext.appex"
+mkdir -p "$ext/Contents/MacOS"
+swiftc -O -parse-as-library -application-extension -swift-version 5 -target arm64-apple-macos14.0 -module-name UpNext \
+  mac/Widget/UpNext.swift -framework WidgetKit -Xlinker -e -Xlinker _NSExtensionMain -o "$ext/Contents/MacOS/UpNext"
+sed "s/VERSION/$version/g" mac/Widget/Info.plist > "$ext/Contents/Info.plist"
+
+# 5. Calendar.app, signed for this Mac only (no paid Apple account: macOS asks once, "Open Anyway").
+# The widget is signed first with its sandbox (macOS runs widgets only sandboxed), then the rest.
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks" "$app/Contents/Resources"
 cp "$build/Calendar-arm64" "$app/Contents/MacOS/Calendar"
 cp "$build/libcalendar_core.dylib" "$app/Contents/Frameworks/"
 cp mac/Calendar.icns "$app/Contents/Resources/"
 sed "s/VERSION/$version/g" mac/Info.plist > "$app/Contents/Info.plist"
-codesign --force --deep --sign - "$app"
+codesign --force --sign - "$app/Contents/Frameworks/libcalendar_core.dylib"
+codesign --force --sign - --entitlements mac/Widget/UpNext.entitlements "$ext"
+codesign --force --sign - "$app"
 
-# 5. What gets published (the same names as before, so updates find them).
+# 6. What gets published (the same names as before, so updates find them).
 mkdir -p "$build/dmg" && cp -R "$app" "$build/dmg/" && ln -s /Applications "$build/dmg/Applications"
 hdiutil create -volname Calendar -srcfolder "$build/dmg" -ov -format UDZO "out/Calendar_${version}_arm64.dmg"
 (cd "$build" && COPYFILE_DISABLE=1 tar -czf "../../out/Calendar.app.tar.gz" Calendar.app)

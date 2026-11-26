@@ -247,7 +247,9 @@ final class CalendarModel {
         Task {
             try? await Task.sleep(for: .milliseconds(1500))
             guard gen == upcomingGen else { return }
-            await client.upcoming(list: upcomingList(state: state()))
+            let list = upcomingList(state: state())
+            await client.upcoming(list: list)
+            UpNextFile.write(list, hour12: settings.hour12)
         }
     }
 
