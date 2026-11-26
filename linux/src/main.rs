@@ -2093,7 +2093,7 @@ impl relm4::Component for Calendar {
             client,
             info,
             data,
-            view: String::new(),
+            view: last_view(),
             cursor: today_s.clone(),
             narrow: false,
             hidden: None,
@@ -2175,6 +2175,7 @@ impl relm4::Component for Calendar {
                         return;
                     }
                     self.view = v;
+                    keep_view(&self.view);
                     if self.view != "month" && self.view != "year" {
                         morning(w);
                     }
@@ -2188,6 +2189,7 @@ impl relm4::Component for Calendar {
             Msg::Day(d) => {
                 self.cursor = d;
                 self.view = s(&self.screen, "dayView").to_string();
+                keep_view(&self.view);
                 morning(w);
             }
             Msg::NewEvent(date, start, end) => {
@@ -2579,4 +2581,22 @@ impl relm4::Component for Calendar {
 fn main() {
     let client = Client::new(App { id: "calendar".into(), name: "Calendar".into(), android_package: None }, data_dir());
     RelmApp::new("app.uuob.calendar").with_args(Vec::new()).run::<Calendar>(client);
+}
+
+/// The view last used on this device, which Calendar opens on (the core falls
+/// back to the shortest ticked view when it is no longer ticked).
+fn view_file() -> PathBuf {
+    glib::user_config_dir().join("app.uuob.calendar").join("last-view")
+}
+
+fn last_view() -> String {
+    std::fs::read_to_string(view_file()).map(|v| v.trim().to_string()).unwrap_or_default()
+}
+
+fn keep_view(v: &str) {
+    let f = view_file();
+    if let Some(dir) = f.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(f, v);
 }

@@ -196,7 +196,9 @@ class CalendarModel(private val ctx: Context) {
   private val client get() = Uuob.client
   var data by mutableStateOf(JSONObject())
   var tasks by mutableStateOf("[]")
-  var view by mutableStateOf("")
+  /** The view on screen, kept on this device: Calendar opens on the one last used. */
+  private val viewPrefs = ctx.getSharedPreferences("view", Context.MODE_PRIVATE)
+  var view by mutableStateOf(viewPrefs.getString("view", "") ?: "")
   var cursor by mutableStateOf(today())
   var narrow by mutableStateOf(true)
   var hidden by mutableStateOf<List<String>?>(null)
@@ -344,7 +346,10 @@ class CalendarModel(private val ctx: Context) {
 
   fun show(v: String) {
     view = v
+    keepView()
   }
+
+  private fun keepView() = viewPrefs.edit().putString("view", view).apply()
 
   fun move(dir: Long) {
     cursor = moveCursor(screen.optString("view"), cursor, dir, UuobSettings.sundayFirst)
@@ -353,6 +358,7 @@ class CalendarModel(private val ctx: Context) {
   fun day(d: String) {
     cursor = d
     view = screen.optString("dayView")
+    keepView()
   }
 
   fun open(key: String) {

@@ -86,7 +86,10 @@ final class CalendarModel {
     let settings: UuobSettings
     var data: [String: Any] = [:]
     var tasks = "[]"
-    var view = ""
+    /// The view on screen, kept on this device: Calendar opens on the one last used.
+    var view = UserDefaults.standard.string(forKey: "view") ?? "" {
+        didSet { UserDefaults.standard.set(view, forKey: "view") }
+    }
     var cursor = today()
     var narrow = false
     /// How many days fit side by side in the window (a narrow window shows fewer than the view has).

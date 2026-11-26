@@ -47,7 +47,7 @@ for mode in light dark; do
 done
 
 # The side panel's edge dragged (dark): wider, to the rail, to nothing (its
-# toggle beside the window's buttons), back out from the left edge; then
+# toggle at the bottom left), back out from the left edge; then
 # ⌃⌘S folds it to the rail. A version without the edge shows the same each time.
 mode=sidebar
 pointer 252 400 drag 330 400; shot wider
